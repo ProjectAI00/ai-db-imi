@@ -723,7 +723,17 @@ cmd_start() {
 
 cmd_complete() {
   ensure_db
-  local task_id="${1:?Usage: imi complete <task_id> [summary]}"
+  local agent; agent=$(current_user)
+  if [ "${1:-}" = "--agent" ]; then
+    local agent_name="${2:-}"
+    if [ -z "$agent_name" ]; then
+      if machine_out; then echo '{"ok":false,"error":"Usage: imi complete [--agent <name>] <task_id> [summary]"}'; fi
+      return 1
+    fi
+    agent="$agent_name"
+    shift 2
+  fi
+  local task_id="${1:?Usage: imi complete [--agent <name>] <task_id> [summary]}"
   local summary="${2:-Task completed}"
 
   local full_tid
@@ -742,7 +752,7 @@ cmd_complete() {
   if [ -n "$goal_id" ]; then
     _sync_goal "$goal_id"
     local mem_id; mem_id=$(gen_id)
-    sql_exec "INSERT INTO memories (id, goal_id, task_id, key, value, type, source, created_at) VALUES ('$(sql_escape "$mem_id")', '$(sql_escape "$goal_id")', '$(sql_escape "$full_tid")', 'completed_summary', '$(sql_escape "$summary")', 'completion', '$(sql_escape "$(current_user)")', $now)"
+    sql_exec "INSERT INTO memories (id, goal_id, task_id, key, value, type, source, created_at) VALUES ('$(sql_escape "$mem_id")', '$(sql_escape "$goal_id")', '$(sql_escape "$full_tid")', 'completed_summary', '$(sql_escape "$summary")', 'completion', '$(sql_escape "$agent")', $now)"
   fi
   _track "complete" "$full_tid" "$goal_id"
 
@@ -807,12 +817,34 @@ cmd_memory() {
 
 cmd_next() {
   ensure_db
+  local stale_ms stale_count
+  stale_ms=$(( $(now_ms) - 1800000 ))
+  stale_count=$(sql_raw "SELECT count(*) FROM tasks WHERE status='in_progress' AND updated_at < $stale_ms" 2>/dev/null || echo "0")
   _unlock_stale
   _track "next" "" ""
+
+  local agent; agent=$(current_user)
+  if [ "${1:-}" = "--agent" ]; then
+    local agent_name="${2:-}"
+    if [ -z "$agent_name" ]; then
+      if machine_out; then echo '{"ok":false,"error":"Usage: imi next [--agent <name>] [goal_id]"}'; fi
+      return 1
+    fi
+    agent="$agent_name"
+    shift 2
+  fi
   local goal_filter="${1:-}"
 
+  if [ "$stale_count" != "0" ]; then
+    if [ "$OUTPUT" = "toon" ]; then
+      echo "stale_released[1]{note}:"
+      echo "  $(toon_escape "$stale_count stale task(s) released back to todo")"
+    elif [ "$OUTPUT" = "human" ]; then
+      echo -e "${YELLOW}⚠${NC} $stale_count stale task(s) released back to todo"
+    fi
+  fi
+
   # Atomic claim: single UPDATE that grabs highest-priority todo task
-  local agent; agent=$(current_user)
   local now; now=$(now_ms)
 
   local where="t.status='todo'"
@@ -826,8 +858,9 @@ cmd_next() {
   tid=$(sql_raw "SELECT t.id FROM tasks t WHERE $where ORDER BY CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, t.created_at ASC LIMIT 1")
 
   if [ -z "$tid" ]; then
-    if machine_out; then echo '{"ok":false,"error":"no_tasks_available"}'; return; fi
-    echo -e "${DIM}No tasks available.${NC}"; return
+    if [ "$OUTPUT" = "json" ]; then echo '{"ok":false,"error":"no_tasks_available"}'; return 0; fi
+    if [ "$OUTPUT" = "toon" ]; then echo "no_tasks[1]{note}:"; echo "  all_done_or_claimed"; return 0; fi
+    echo -e "${DIM}No tasks available.${NC}"; return 0
   fi
 
   # Atomic claim
@@ -836,8 +869,9 @@ cmd_next() {
   # Verify we actually got it (another agent may have raced us)
   local claimed; claimed=$(sql_raw "SELECT id FROM tasks WHERE id='$tid' AND agent_id='$(sql_escape "$agent")' AND status='in_progress'")
   if [ -z "$claimed" ]; then
-    if machine_out; then echo '{"ok":false,"error":"race_lost_try_again"}'; return; fi
-    echo -e "${YELLOW}Race condition — try again.${NC}"; return
+    if [ "$OUTPUT" = "json" ]; then echo '{"ok":false,"error":"race_lost_try_again"}'; return 0; fi
+    if [ "$OUTPUT" = "toon" ]; then echo "race_lost[1]{note}:"; echo "  try_again"; return 0; fi
+    echo -e "${YELLOW}Race lost — another agent claimed this task. Run \`imi next\` again.${NC}"; return 0
   fi
 
   local goal_id; goal_id=$(sql_raw "SELECT goal_id FROM tasks WHERE id='$tid'")
@@ -880,7 +914,9 @@ cmd_next() {
     toon_section "direction" "note" \
       "$(sql_raw "SELECT content FROM direction_notes ORDER BY created_at DESC LIMIT 3")"
     [ -n "$last_attempt" ] && echo "last_failure[1]{reason}:" && echo "  $(toon_escape "$last_attempt")"
-    return
+    toon_section "memories" "key,value,type" \
+      "$(sql_raw "SELECT key||'|'||value||'|'||coalesce(type,'') FROM memories WHERE goal_id='$(sql_escape "$goal_id")' ORDER BY created_at DESC LIMIT 5")"
+    return 0
   fi
 
   echo -e "${YELLOW}◐${NC} Claimed: ${BOLD}$title${NC}  ${DIM}@${agent}${NC}"
@@ -894,12 +930,23 @@ cmd_next() {
 
 cmd_fail() {
   ensure_db
-  local task_id="${1:?Usage: imi fail <task_id> <reason>}"
-  local reason="${2:?Usage: imi fail <task_id> <reason>}"
+  local agent; agent=$(current_user)
+  if [ "${1:-}" = "--agent" ]; then
+    local agent_name="${2:-}"
+    if [ -z "$agent_name" ]; then
+      if machine_out; then echo '{"ok":false,"error":"Usage: imi fail [--agent <name>] <task_id> <reason>"}'; fi
+      return 1
+    fi
+    agent="$agent_name"
+    shift 2
+  fi
+  local task_id="${1:?Usage: imi fail [--agent <name>] <task_id> <reason>}"
+  local reason="${2:?Usage: imi fail [--agent <name>] <task_id> <reason>}"
 
   local full_tid; full_tid=$(sql_raw "SELECT id FROM tasks WHERE id LIKE '$(sql_escape "$task_id")%' LIMIT 1")
   if [ -z "$full_tid" ]; then
-    if machine_out; then echo '{"ok":false,"error":"Task not found"}'; fi
+    if machine_out; then echo '{"ok":false,"error":"Task not found: '"$task_id"'"}';
+    else echo -e "${RED}✕ Task not found: $task_id${NC}"; fi
     return 1
   fi
 
@@ -909,13 +956,13 @@ cmd_fail() {
   # Store failure reason as memory so next agent knows what was tried
   local goal_id; goal_id=$(sql_raw "SELECT goal_id FROM tasks WHERE id='$full_tid'")
   local mem_id; mem_id=$(gen_id)
-  sql_exec "INSERT INTO memories (id, goal_id, task_id, key, value, type, source, created_at) VALUES ('$(sql_escape "$mem_id")', '$(sql_escape "$goal_id")', '$(sql_escape "$full_tid")', 'failure_reason', '$(sql_escape "$reason")', 'failure', '$(sql_escape "$(current_user)")', $now)"
+  sql_exec "INSERT INTO memories (id, goal_id, task_id, key, value, type, source, created_at) VALUES ('$(sql_escape "$mem_id")', '$(sql_escape "$goal_id")', '$(sql_escape "$full_tid")', 'failure_reason', '$(sql_escape "$reason")', 'failure', '$(sql_escape "$agent")', $now)"
 
   [ -n "$goal_id" ] && _sync_goal "$goal_id"
   _track "fail" "$full_tid" "$goal_id"
 
   local title; title=$(sql_raw "SELECT title FROM tasks WHERE id='$full_tid'")
-  if [ "$OUTPUT" = "json" ]; then echo "{\"ok\":true,\"id\":\"$full_tid\",\"status\":\"blocked\",\"title\":\"$title\"}"; return; fi
+  if [ "$OUTPUT" = "json" ]; then echo "{\"ok\":true,\"id\":\"$full_tid\",\"status\":\"todo\",\"title\":\"$title\"}"; return; fi
   if [ "$OUTPUT" = "toon" ]; then echo "fail[1]{id,status}:"; echo "  $(toon_escape "$full_tid"),todo"; return; fi
   echo -e "${RED}✕${NC} Failed: ${BOLD}$title${NC}"
   echo -e "  ${DIM}reason stored — next agent will see it via \`imi next\`${NC}"
@@ -1399,15 +1446,15 @@ case "${1:-}" in
   memory|mem|m)   cmd_memory "${2:-list}" "${3:-}" "${4:-}" "${5:-}" ;;
   decide|d)       cmd_decide "${2:-}" "${3:-}" "${4:-}" ;;
   log|l)          cmd_log "${2:-}" ;;
-  next|n)         cmd_next "${2:-}" ;;
+  next|n)         cmd_next "${@:2}" ;;
   ping)           cmd_ping "${2:-}" ;;
-  fail)           cmd_fail "${2:-}" "${3:-}" ;;
+  fail)           cmd_fail "${@:2}" ;;
   stats|stat)       cmd_stats ;;
   instructions|inst) cmd_instructions "${2:-}" ;;
   add-goal|ag)    cmd_add_goal "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" ;;
   add-task|at)    cmd_add_task "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
   start|st)       cmd_start "${2:-}" ;;
-  complete|done)  cmd_complete "${2:-}" "${3:-}" ;;
+  complete|done)  cmd_complete "${@:2}" ;;
   delete|rm)      cmd_delete "${2:-}" ;;
   reset)          cmd_reset "${2:-}" ;;
   init)           cmd_init ;;

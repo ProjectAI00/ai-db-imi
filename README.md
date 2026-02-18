@@ -8,49 +8,90 @@ AI agents are stateless. Every session starts from zero — no memory of what wa
 
 ## The Solution
 
-IMI stores goals, tasks, decisions, and memories in a local SQLite DB. Any agent (Claude Code, Copilot CLI, Cursor, Codex) calls `./imi next --toon` and gets everything it needs to start working — no briefing required.
+IMI stores goals, tasks, decisions, and memories in a local SQLite DB. Any agent (Claude Code, GitHub Copilot CLI, Cursor, Codex) calls `./imi next --toon` and gets everything it needs to start working — no briefing required.
 
 ## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ProjectAI00/ai-db-imi/main/imi -o ~/.local/bin/imi
 chmod +x ~/.local/bin/imi
-imi init   # in your project folder
+imi init   # run inside your project folder
 ```
 
-Or just drop `imi` in your project and call `./imi`.
+Or drop `imi` directly in your project root and call `./imi`.
+
+Make sure `~/.local/bin` is in your `$PATH`:
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+```
 
 ## Usage
 
 ```bash
-imi status                          # Dashboard
-imi context                         # What matters right now
-imi next --toon                     # Claim next task (agent-optimized output)
-imi complete <id> "what you did"    # Mark done + store memory
-imi run <task_id> [model]           # Fire hankweave to execute a task
+imi status                            # Dashboard — goals, tasks, memories
+imi context --toon                    # Full context: decisions, direction, WIP
+imi next --toon                       # Atomically claim next task (agent-optimized)
+imi next --agent <name> --toon        # Claim as a named agent
+imi complete <id> "what you did"      # Mark done + store completion memory
+imi fail <id> "why it failed"         # Release task back to queue with failure context
+imi memory add <goal_id> <key> "val"  # Store a persistent insight
+imi decide "what" "why"               # Log an architectural decision
+imi log "direction note"              # Log a strategic direction note
+imi add-goal "name" "why"             # Create a new goal
+imi add-task <goal_id> "title" "desc" # Add a task to a goal
+imi ping <task_id>                    # Heartbeat — keep a task alive
 ```
 
 ## The Loop
 
 ```
-1. You define a goal      → imi add-goal
-2. Agent claims a task    → imi next --toon
-3. Agent executes         → imi run (via hankweave)
-4. Agent writes back      → imi complete "summary" + imi memory add
-5. Next agent picks up    → has full context from step 4
+1. You define a goal        →  imi add-goal "Ship auth system" "users need to log in"
+2. Agent claims a task      →  imi next --agent claude --toon
+3. Agent executes           →  (Claude Code / Copilot / Cursor does the work)
+4. Agent writes back        →  imi complete <id> "implemented JWT with RS256"
+                               imi memory add <goal> jwt_rotation "rotate every 90d"
+5. Next agent picks up      →  imi next --toon  ← sees all prior context automatically
 ```
 
-Each cycle compounds. Agents get smarter about your project over time.
+Each cycle compounds. Agents get smarter about your project over time. Works across sessions, machines, and team members.
+
+## Session Audit with Entire
+
+IMI integrates with [Entire](https://entire.io) for session replay and audit:
+
+```bash
+entire enable --agent claude-code   # hook into your agent sessions
+entire rewind                       # replay what happened in a past session
+entire explain                      # summarise a session in plain English
+```
+
+Entire records what happened. IMI remembers what matters. They complement each other — IMI is forward state, Entire is backward audit.
 
 ## Stack
 
-- Plain bash — no dependencies, works everywhere
-- SQLite — portable, no server
-- Hankweave — execution runtime with checkpointing/rollback (`imi run`)
-- Works with: Claude Code, GitHub Copilot CLI, Cursor, Codex, any CLI agent
+- **Plain bash** — no runtime dependencies, works anywhere
+- **SQLite** — portable, zero-config, project-local (`.imi/state.db`)
+- **Entire** — optional session audit/rewind layer
+- **Works with**: Claude Code, GitHub Copilot CLI, Cursor, Codex, any CLI agent
 
-## Prompts
+## Agent Prompts
 
-`prompts/plan-mode.md` — inject as system prompt when an agent is creating goals/tasks. Guides it to discover files, acceptance criteria, workspace path.
+Drop these as system prompts to give any agent full IMI literacy:
 
-`prompts/execute-mode.md` — injected automatically by `imi run` into the hankweave execution.
+| File | Use when |
+|------|----------|
+| `prompts/plan-mode.md` | Agent is decomposing a goal into tasks |
+| `prompts/execute-mode.md` | Agent is executing a task |
+| `prompts/ops-mode.md` | Conversational ops / status / decisions |
+
+## Multi-Agent Support
+
+Multiple agents can work in parallel — each claims a different task atomically:
+
+```bash
+imi next --agent engineer-a --toon   # Agent A claims task 1
+imi next --agent engineer-b --toon   # Agent B claims task 2 (different task)
+imi next --agent engineer-c --toon   # Agent C claims task 3
+```
+
+If a task is abandoned, IMI auto-releases it after 30 minutes. The next agent picks it up with full failure context.

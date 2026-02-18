@@ -2,6 +2,20 @@
 
 This repo IS the IMI CLI. You are working on the tool that agents use to persist goals, tasks, and memory across sessions.
 
+## ⚠️ Critical Architecture Note
+
+**IMI does not call execution tools. Execution tools plug into IMI.**
+
+Tools like Hankweave, Entire, Claude Code, Codex, Cursor are execution-layer details. IMI is the state layer above all of them. Any agent using any execution tool reads context from IMI before starting and writes results back when done. IMI doesn't care HOW work was done, only WHAT was done and WHAT was learned.
+
+Never couple IMI to a specific execution tool. That creates lock-in.
+
+```
+IMI                →  ops layer      (goals, tasks, memory — across all sessions, users, agents)
+Execution tools    →  run layer      (hankweave, claude code, codex — HOW work gets done)
+Session tools      →  session layer  (entire — records what happened, enables rewind)
+```
+
 ## What IMI Is
 
 IMI is a persistent state engine for AI agents. It's a SQLite DB + bash CLI that any agent (Claude Code, Copilot, Cursor, Codex) can read from and write to. It solves the stateless agent problem: every session starts knowing what to build, why, and what was already learned.

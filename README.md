@@ -55,9 +55,23 @@ imi ping <task_id>                    # Heartbeat — keep a task alive
 
 Each cycle compounds. Agents get smarter about your project over time. Works across sessions, machines, and team members.
 
-## Session Audit with Entire
+## Integrations
 
-IMI integrates with [Entire](https://entire.io) for session replay and audit:
+IMI is the state layer. These tools plug into the execution layer beneath it — IMI doesn't call them, agents choose when to use them.
+
+### Hankweave — task execution & checkpointing
+
+Use Hankweave for long or complex multi-step tasks where you want rollback and checkpointing:
+
+```bash
+./imi run <task_id>   # generates hank.json from task context and fires hankweave
+```
+
+Hankweave handles HOW work gets done. IMI handles WHAT was decided and WHAT was learned.
+
+### Entire — session audit & rewind
+
+Use Entire for session replay and audit:
 
 ```bash
 entire enable --agent claude-code   # hook into your agent sessions
@@ -65,12 +79,13 @@ entire rewind                       # replay what happened in a past session
 entire explain                      # summarise a session in plain English
 ```
 
-Entire records what happened. IMI remembers what matters. They complement each other — IMI is forward state, Entire is backward audit.
+Entire records what happened. IMI remembers what matters. Forward state + backward audit.
 
 ## Stack
 
-- **Plain bash** — no runtime dependencies, works anywhere
+- **Rust** — single binary, zero runtime dependencies, ~5ms per command
 - **SQLite** — portable, zero-config, project-local (`.imi/state.db`)
+- **Hankweave** — optional execution/checkpointing layer
 - **Entire** — optional session audit/rewind layer
 - **Works with**: Claude Code, GitHub Copilot CLI, Cursor, Codex, any CLI agent
 

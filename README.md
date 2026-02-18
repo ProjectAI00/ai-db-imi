@@ -64,7 +64,8 @@ IMI is the state layer. These tools plug into the execution layer beneath it —
 Use Hankweave for long or complex multi-step tasks where you want rollback and checkpointing:
 
 ```bash
-./imi run <task_id>   # generates hank.json from task context and fires hankweave
+./imi run <task_id>        # generates hank.json from task context
+bunx hankweave hank.json   # execute it
 ```
 
 Hankweave handles HOW work gets done. IMI handles WHAT was decided and WHAT was learned.

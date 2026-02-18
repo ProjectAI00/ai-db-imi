@@ -13,7 +13,7 @@ IMI stores goals, tasks, decisions, and memories in a local SQLite DB. Any agent
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ProjectAI00/ai-imi/main/imi -o ~/.local/bin/imi
+curl -fsSL https://raw.githubusercontent.com/ProjectAI00/ai-db-imi/main/imi -o ~/.local/bin/imi
 chmod +x ~/.local/bin/imi
 imi init   # in your project folder
 ```

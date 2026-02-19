@@ -92,7 +92,13 @@ impl OutputCtx {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "imi", version = VERSION, about = "IMI state engine", propagate_version = true)]
+#[command(
+    name = "imi",
+    version = VERSION,
+    about = "Persistent state engine for AI agents",
+    long_about = "IMI — persistent state engine for AI agents.\n\nKeeps goals, tasks, and memory across sessions so every agent starts informed.\n\nAgent quickstart:\n  imi status    → see all goals, tasks, progress\n  imi context   → what matters right now\n  imi next      → claim the highest-priority task and get full context",
+    propagate_version = true
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -100,48 +106,51 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    #[command(about = "Initialize IMI in the current directory")]
     Init,
-    #[command(alias = "s")]
+    #[command(alias = "s", about = "Show all goals, tasks, and progress")]
     Status,
-    #[command(alias = "g")]
+    #[command(alias = "g", about = "List all goals")]
     Goals,
-    #[command(alias = "t")]
+    #[command(alias = "t", about = "List tasks, optionally filtered by status or goal")]
     Tasks {
         filter: Option<String>,
     },
-    #[command(alias = "ctx", alias = "c")]
+    #[command(alias = "ctx", alias = "c", about = "Get full context for current work")]
     Context {
         goal_id: Option<String>,
     },
-    #[command(alias = "n")]
+    #[command(alias = "n", about = "Claim the highest-priority available task and get full context")]
     Next {
         #[arg(long)]
         agent: Option<String>,
         goal_id: Option<String>,
     },
-    #[command(alias = "st")]
+    #[command(alias = "st", about = "Lock a specific task for this agent")]
     Start {
         #[arg(long)]
         agent: Option<String>,
         task_id: String,
     },
-    #[command(alias = "done")]
+    #[command(alias = "done", about = "Mark a task done and store summary as memory")]
     Complete {
         #[arg(long)]
         agent: Option<String>,
         task_id: String,
         summary: Vec<String>,
     },
+    #[command(about = "Release a task lock and record why it's blocked")]
     Fail {
         #[arg(long)]
         agent: Option<String>,
         task_id: String,
         reason: Vec<String>,
     },
+    #[command(about = "Heartbeat to keep a task locked (~every 10 min)")]
     Ping {
         task_id: String,
     },
-    #[command(alias = "ag")]
+    #[command(alias = "ag", about = "Create a new goal")]
     AddGoal {
         name: String,
         desc: Option<String>,
@@ -156,7 +165,7 @@ enum Commands {
         #[arg(long)]
         workspace: Option<String>,
     },
-    #[command(alias = "at")]
+    #[command(alias = "at", about = "Add a task to a goal")]
     AddTask {
         goal_id: String,
         title: String,
@@ -174,31 +183,33 @@ enum Commands {
         #[arg(long)]
         workspace: Option<String>,
     },
-    #[command(alias = "mem", alias = "m")]
+    #[command(alias = "mem", alias = "m", about = "View or add persistent memories")]
     Memory {
         #[command(subcommand)]
         action: Option<MemoryAction>,
     },
-    #[command(alias = "d")]
+    #[command(alias = "d", about = "Record an architectural or design decision")]
     Decide {
         what: String,
         why: String,
         affects: Option<String>,
     },
-    #[command(alias = "l")]
+    #[command(alias = "l", about = "Log an insight or direction note")]
     Log {
         note: Vec<String>,
     },
-    #[command(alias = "rm")]
+    #[command(alias = "rm", about = "Delete a goal or task by ID")]
     Delete {
         id: String,
     },
+    #[command(about = "Wipe all state (destructive — use with caution)")]
     Reset {
         #[arg(short, long)]
         force: bool,
     },
-    #[command(alias = "stat")]
+    #[command(alias = "stat", about = "Show usage statistics")]
     Stats,
+    #[command(about = "Print agent instructions for a given target")]
     Instructions {
         target: Option<String>,
     },

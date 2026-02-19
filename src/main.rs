@@ -9,6 +9,57 @@ use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const VERSION: &str = "0.3.0";
+// PostHog EU public capture key — safe to commit (client-side key)
+const POSTHOG_KEY: &str = "phc_exyd1ppU0ZS7McQ1ay1gxvCaUI2QfYPuMCTk4kawVKF";
+
+fn get_or_create_install_id(conn: &Connection) -> String {
+    // Try to read existing install_id
+    if let Ok(id) = conn.query_row(
+        "SELECT value FROM settings WHERE key='install_id' LIMIT 1",
+        [],
+        |r| r.get::<_, String>(0),
+    ) {
+        return id;
+    }
+    // Generate a new one and persist it
+    let id = format!("iid_{}", gen_id());
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('install_id', ?1)",
+        params![id],
+    );
+    id
+}
+
+fn track(event: &str, install_id: &str, duration_ms: u128) {
+    if env::var("IMI_NO_ANALYTICS").is_ok() {
+        return;
+    }
+    if POSTHOG_KEY == "phc_REPLACE_ME" {
+        return;
+    }
+    let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let body = format!(
+        r#"{{"api_key":"{key}","event":"imi_{event}","distinct_id":"{id}","properties":{{"version":"{ver}","platform":"{plat}","duration_ms":{dur},"$lib":"imi-cli"}}}}"#,
+        key = POSTHOG_KEY,
+        event = event,
+        id = install_id,
+        ver = VERSION,
+        plat = platform,
+        dur = duration_ms,
+    );
+    let _ = Command::new("curl")
+        .args([
+            "-s", "-o", "/dev/null",
+            "-X", "POST",
+            "-H", "Content-Type: application/json",
+            "-d", &body,
+            "https://us.i.posthog.com/capture/",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn(); // fire-and-forget, never blocks
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputMode {
@@ -98,6 +149,12 @@ enum Commands {
         why: Option<String>,
         for_who: Option<String>,
         success_signal: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        relevant_files: Vec<String>,
+        #[arg(long)]
+        context: Option<String>,
+        #[arg(long)]
+        workspace: Option<String>,
     },
     #[command(alias = "at")]
     AddTask {
@@ -106,6 +163,16 @@ enum Commands {
         desc: Option<String>,
         priority: Option<String>,
         why: Option<String>,
+        #[arg(long)]
+        context: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        relevant_files: Vec<String>,
+        #[arg(long, value_delimiter = ',')]
+        tools: Vec<String>,
+        #[arg(long)]
+        acceptance_criteria: Option<String>,
+        #[arg(long)]
+        workspace: Option<String>,
     },
     #[command(alias = "mem", alias = "m")]
     Memory {
@@ -191,6 +258,7 @@ struct TaskClaim {
     title: String,
     description: String,
     why_: String,
+    context: String,
     goal_id: Option<String>,
 }
 
@@ -259,8 +327,10 @@ fn main() {
 
     let result = dispatch(&mut conn, &db_path, out, command);
 
-    let duration_ms = start.elapsed().as_millis() as i64;
-    log_event(&conn, &command_name, None, None, None, duration_ms);
+    let duration_ms = start.elapsed().as_millis();
+    log_event(&conn, &command_name, None, None, None, duration_ms as i64);
+    let install_id = get_or_create_install_id(&conn);
+    track(&command_name, &install_id, duration_ms);
 
     if let Err(e) = result {
         emit_error(out, &e);
@@ -295,14 +365,22 @@ fn dispatch(conn: &mut Connection, db_path: &Path, out: OutputCtx, command: Comm
             why,
             for_who,
             success_signal,
-        } => cmd_add_goal(conn, out, name, desc, priority, why, for_who, success_signal),
+            relevant_files,
+            context,
+            workspace,
+        } => cmd_add_goal(conn, out, name, desc, priority, why, for_who, success_signal, relevant_files, context, workspace),
         Commands::AddTask {
             goal_id,
             title,
             desc,
             priority,
             why,
-        } => cmd_add_task(conn, out, goal_id, title, desc, priority, why),
+            context,
+            relevant_files,
+            tools,
+            acceptance_criteria,
+            workspace,
+        } => cmd_add_task(conn, out, goal_id, title, desc, priority, why, context, relevant_files, tools, acceptance_criteria, workspace),
         Commands::Memory { action } => cmd_memory(conn, out, action),
         Commands::Decide { what, why, affects } => cmd_decide(conn, out, what, why, affects),
         Commands::Log { note } => cmd_log(conn, out, note.join(" ")),
@@ -1061,7 +1139,8 @@ fn cmd_next(
                             "id": task.id,
                             "title": task.title,
                             "why": task.why_,
-                            "description": task.description
+                            "description": task.description,
+                            "context": task.context
                         },
                         "goal": goal_json,
                         "decisions": decisions_json,
@@ -1081,6 +1160,9 @@ fn cmd_next(
                     vec![vec![task.id.clone(), task.title.clone(), task.why_.clone()]],
                 );
                 t.section("desc", &["text"], vec![vec![task.description.clone()]]);
+                if !task.context.is_empty() {
+                    t.section("context", &["text"], vec![vec![task.context.clone()]]);
+                }
                 if let Some(g) = goal {
                     t.section(
                         "goal",
@@ -1128,6 +1210,9 @@ fn cmd_next(
             }
             if !task.description.is_empty() {
                 println!("\n{}", task.description);
+            }
+            if !task.context.is_empty() {
+                println!("\ncontext: {}", task.context);
             }
             if let Some(g) = goal {
                 println!("\nGoal: {}", g.name);
@@ -1289,17 +1374,27 @@ fn cmd_add_goal(
     why: Option<String>,
     for_who: Option<String>,
     success_signal: Option<String>,
+    relevant_files: Vec<String>,
+    context: Option<String>,
+    workspace: Option<String>,
 ) -> Result<(), String> {
     let id = gen_id();
     let now = now_ts();
-    let cwd = env::current_dir()
-        .ok()
-        .map(|x| x.display().to_string())
-        .unwrap_or_default();
+    let cwd = workspace.unwrap_or_else(|| {
+        env::current_dir()
+            .ok()
+            .map(|x| x.display().to_string())
+            .unwrap_or_default()
+    });
+    let rf_json = if relevant_files.is_empty() {
+        "[]".to_string()
+    } else {
+        serde_json::to_string(&relevant_files).unwrap_or_else(|_| "[]".to_string())
+    };
 
     conn.execute(
-        "INSERT INTO goals (id, name, description, why, for_who, success_signal, status, priority, tags, workspace_path, relevant_files, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'todo', ?7, '[]', ?8, '[]', ?9, ?9)",
+        "INSERT INTO goals (id, name, description, why, for_who, success_signal, status, priority, context, tags, workspace_path, relevant_files, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'todo', ?7, ?8, '[]', ?9, ?10, ?11, ?11)",
         params![
             id,
             name,
@@ -1308,7 +1403,9 @@ fn cmd_add_goal(
             for_who.unwrap_or_default(),
             success_signal.unwrap_or_default(),
             priority.unwrap_or_else(|| "medium".to_string()),
+            context.unwrap_or_default(),
             cwd,
+            rf_json,
             now
         ],
     )
@@ -1334,27 +1431,48 @@ fn cmd_add_task(
     desc: Option<String>,
     priority: Option<String>,
     why: Option<String>,
+    context: Option<String>,
+    relevant_files: Vec<String>,
+    tools: Vec<String>,
+    acceptance_criteria: Option<String>,
+    workspace: Option<String>,
 ) -> Result<(), String> {
     let goal_id = resolve_id_prefix(conn, "goals", &goal_prefix)?
         .ok_or_else(|| format!("goal not found: {goal_prefix}"))?;
     let id = gen_id();
     let now = now_ts();
-    let cwd = env::current_dir()
-        .ok()
-        .map(|x| x.display().to_string())
-        .unwrap_or_default();
+    let cwd = workspace.unwrap_or_else(|| {
+        env::current_dir()
+            .ok()
+            .map(|x| x.display().to_string())
+            .unwrap_or_default()
+    });
+    let rf_json = if relevant_files.is_empty() {
+        "[]".to_string()
+    } else {
+        serde_json::to_string(&relevant_files).unwrap_or_else(|_| "[]".to_string())
+    };
+    let tools_json = if tools.is_empty() {
+        "[]".to_string()
+    } else {
+        serde_json::to_string(&tools).unwrap_or_else(|_| "[]".to_string())
+    };
 
     conn.execute(
-        "INSERT INTO tasks (id, title, description, why, linked_files, tags, time_frame, priority, status, goal_id, execution_format, workspace_path, relevant_files, tools, created_at, updated_at, created_by)
-         VALUES (?1, ?2, ?3, ?4, '[]', '[]', 'this_week', ?5, 'todo', ?6, 'json', ?7, '[]', '[]', ?8, ?8, 'user')",
+        "INSERT INTO tasks (id, title, description, why, context, linked_files, tags, time_frame, priority, status, goal_id, execution_format, workspace_path, relevant_files, tools, acceptance_criteria, created_at, updated_at, created_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, '[]', '[]', 'this_week', ?6, 'todo', ?7, 'json', ?8, ?9, ?10, ?11, ?12, ?12, 'user')",
         params![
             id,
             title,
             desc.unwrap_or_default(),
             why.unwrap_or_default(),
+            context.unwrap_or_default(),
             priority.unwrap_or_else(|| "medium".to_string()),
             goal_id,
             cwd,
+            rf_json,
+            tools_json,
+            acceptance_criteria,
             now
         ],
     )
@@ -1794,6 +1912,9 @@ CREATE TABLE IF NOT EXISTS workspaces (
 CREATE TABLE IF NOT EXISTS events (
   id TEXT PRIMARY KEY, command TEXT NOT NULL, task_id TEXT,
   goal_id TEXT, agent_id TEXT, duration_ms INTEGER DEFAULT 0, created_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY, value TEXT NOT NULL
 );",
     )
     .map_err(|e| e.to_string())
@@ -2151,7 +2272,7 @@ fn claim_next_task(conn: &mut Connection, goal_id: Option<&str>, agent: &str) ->
 
     let candidate: Option<TaskClaim> = if let Some(goal) = goal_id {
         tx.query_row(
-            "SELECT id, title, COALESCE(description,''), COALESCE(why,''), goal_id
+            "SELECT id, title, COALESCE(description,''), COALESCE(why,''), COALESCE(context,''), goal_id
              FROM tasks
              WHERE status='todo' AND goal_id=?1
              ORDER BY CASE priority
@@ -2169,7 +2290,8 @@ fn claim_next_task(conn: &mut Connection, goal_id: Option<&str>, agent: &str) ->
                     title: r.get(1)?,
                     description: r.get(2)?,
                     why_: r.get(3)?,
-                    goal_id: r.get(4)?,
+                    context: r.get(4)?,
+                    goal_id: r.get(5)?,
                 })
             },
         )
@@ -2177,7 +2299,7 @@ fn claim_next_task(conn: &mut Connection, goal_id: Option<&str>, agent: &str) ->
         .map_err(|e| e.to_string())?
     } else {
         tx.query_row(
-            "SELECT id, title, COALESCE(description,''), COALESCE(why,''), goal_id
+            "SELECT id, title, COALESCE(description,''), COALESCE(why,''), COALESCE(context,''), goal_id
              FROM tasks
              WHERE status='todo'
              ORDER BY CASE priority
@@ -2195,7 +2317,8 @@ fn claim_next_task(conn: &mut Connection, goal_id: Option<&str>, agent: &str) ->
                     title: r.get(1)?,
                     description: r.get(2)?,
                     why_: r.get(3)?,
-                    goal_id: r.get(4)?,
+                    context: r.get(4)?,
+                    goal_id: r.get(5)?,
                 })
             },
         )

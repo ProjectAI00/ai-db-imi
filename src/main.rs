@@ -456,7 +456,29 @@ fn cmd_init(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), Str
         );
         print!("{}", t.finish());
     } else {
-        println!("● Initialized IMI in .imi/state.db");
+        let bold  = |s: &str| if out.color { format!("\x1b[1m{s}\x1b[0m") } else { s.to_string() };
+        let dim   = |s: &str| if out.color { format!("\x1b[2m{s}\x1b[0m") } else { s.to_string() };
+        let green = |s: &str| if out.color { format!("\x1b[32m{s}\x1b[0m") } else { s.to_string() };
+
+        println!();
+        println!("  {}  {}", bold("IMI"), dim(&format!("v{VERSION}")));
+        println!("  {}", dim("The persistent brain for AI agents."));
+        println!();
+        println!("  {} {}", green("✓"), format!("Initialized → {}", db_path.display()));
+        println!();
+        println!("  {}", bold("Start here:"));
+        println!("  {}  {}",
+            "  imi add-goal \"name\" \"why it matters\"",
+            dim("← define what you're building"));
+        println!("  {}  {}",
+            "  imi next --toon                     ",
+            dim("← hand context to any AI agent"));
+        println!("  {}  {}",
+            "  imi status                          ",
+            dim("← see your dashboard"));
+        println!();
+        println!("  {}  aibyimi.com", dim("→"));
+        println!();
     }
     Ok(())
 }

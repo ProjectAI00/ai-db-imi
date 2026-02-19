@@ -1,5 +1,5 @@
 {
-  "name": "@aibyimi/imi",
+  "name": "@imi-ai/imi",
   "version": "0.3.0",
   "description": "IMI — the persistent brain for AI agents. One command to install and initialize.",
   "bin": {

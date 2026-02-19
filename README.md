@@ -13,7 +13,7 @@ IMI stores goals, tasks, decisions, and memories in a local SQLite DB. Any agent
 ## Install
 
 ```bash
-bunx @aibyimi/imi
+bunx @imi-ai/imi
 ```
 
 That's it. Downloads the binary, runs `imi init` in your project folder.

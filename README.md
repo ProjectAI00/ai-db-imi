@@ -13,12 +13,16 @@ IMI stores goals, tasks, decisions, and memories in a local SQLite DB. Any agent
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ProjectAI00/ai-db-imi/main/imi -o ~/.local/bin/imi
-chmod +x ~/.local/bin/imi
-imi init   # run inside your project folder
+bunx @aibyimi/imi
 ```
 
-Or drop `imi` directly in your project root and call `./imi`.
+That's it. Downloads the binary, runs `imi init` in your project folder.
+
+Or via curl:
+
+```bash
+curl -fsSL https://aibyimi.com/install | bash
+```
 
 Make sure `~/.local/bin` is in your `$PATH`:
 ```bash

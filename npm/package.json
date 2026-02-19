@@ -1,0 +1,19 @@
+{
+  "name": "@aibyimi/imi",
+  "version": "0.3.0",
+  "description": "IMI — the persistent brain for AI agents. One command to install and initialize.",
+  "bin": {
+    "imi": "./run.js"
+  },
+  "scripts": {},
+  "keywords": ["ai", "agents", "cli", "imi", "memory", "persistent"],
+  "author": "aibyimi",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ProjectAI00/ai-db-imi"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

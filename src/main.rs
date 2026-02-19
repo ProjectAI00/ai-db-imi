@@ -260,6 +260,10 @@ struct TaskClaim {
     why_: String,
     context: String,
     goal_id: Option<String>,
+    relevant_files: String,
+    tools: String,
+    acceptance_criteria: String,
+    workspace_path: String,
 }
 
 enum ClaimResult {
@@ -1140,7 +1144,11 @@ fn cmd_next(
                             "title": task.title,
                             "why": task.why_,
                             "description": task.description,
-                            "context": task.context
+                            "context": task.context,
+                            "relevant_files": task.relevant_files,
+                            "tools": task.tools,
+                            "acceptance_criteria": task.acceptance_criteria,
+                            "workspace_path": task.workspace_path
                         },
                         "goal": goal_json,
                         "decisions": decisions_json,
@@ -1162,6 +1170,18 @@ fn cmd_next(
                 t.section("desc", &["text"], vec![vec![task.description.clone()]]);
                 if !task.context.is_empty() {
                     t.section("context", &["text"], vec![vec![task.context.clone()]]);
+                }
+                if task.relevant_files != "[]" && !task.relevant_files.is_empty() {
+                    t.section("relevant_files", &["files"], vec![vec![task.relevant_files.clone()]]);
+                }
+                if !task.acceptance_criteria.is_empty() {
+                    t.section("acceptance_criteria", &["criteria"], vec![vec![task.acceptance_criteria.clone()]]);
+                }
+                if task.tools != "[]" && !task.tools.is_empty() {
+                    t.section("tools", &["tools"], vec![vec![task.tools.clone()]]);
+                }
+                if !task.workspace_path.is_empty() {
+                    t.section("workspace", &["path"], vec![vec![task.workspace_path.clone()]]);
                 }
                 if let Some(g) = goal {
                     t.section(
@@ -2272,7 +2292,8 @@ fn claim_next_task(conn: &mut Connection, goal_id: Option<&str>, agent: &str) ->
 
     let candidate: Option<TaskClaim> = if let Some(goal) = goal_id {
         tx.query_row(
-            "SELECT id, title, COALESCE(description,''), COALESCE(why,''), COALESCE(context,''), goal_id
+            "SELECT id, title, COALESCE(description,''), COALESCE(why,''), COALESCE(context,''), goal_id,
+                    COALESCE(relevant_files,'[]'), COALESCE(tools,'[]'), COALESCE(acceptance_criteria,''), COALESCE(workspace_path,'')
              FROM tasks
              WHERE status='todo' AND goal_id=?1
              ORDER BY CASE priority
@@ -2292,6 +2313,10 @@ fn claim_next_task(conn: &mut Connection, goal_id: Option<&str>, agent: &str) ->
                     why_: r.get(3)?,
                     context: r.get(4)?,
                     goal_id: r.get(5)?,
+                    relevant_files: r.get(6)?,
+                    tools: r.get(7)?,
+                    acceptance_criteria: r.get(8)?,
+                    workspace_path: r.get(9)?,
                 })
             },
         )
@@ -2299,7 +2324,8 @@ fn claim_next_task(conn: &mut Connection, goal_id: Option<&str>, agent: &str) ->
         .map_err(|e| e.to_string())?
     } else {
         tx.query_row(
-            "SELECT id, title, COALESCE(description,''), COALESCE(why,''), COALESCE(context,''), goal_id
+            "SELECT id, title, COALESCE(description,''), COALESCE(why,''), COALESCE(context,''), goal_id,
+                    COALESCE(relevant_files,'[]'), COALESCE(tools,'[]'), COALESCE(acceptance_criteria,''), COALESCE(workspace_path,'')
              FROM tasks
              WHERE status='todo'
              ORDER BY CASE priority
@@ -2319,6 +2345,10 @@ fn claim_next_task(conn: &mut Connection, goal_id: Option<&str>, agent: &str) ->
                     why_: r.get(3)?,
                     context: r.get(4)?,
                     goal_id: r.get(5)?,
+                    relevant_files: r.get(6)?,
+                    tools: r.get(7)?,
+                    acceptance_criteria: r.get(8)?,
+                    workspace_path: r.get(9)?,
                 })
             },
         )

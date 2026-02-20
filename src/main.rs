@@ -560,12 +560,16 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
     }
 
     if out.is_toon() {
+        let done_goals_count = goals.iter().filter(|g| g.status == "done").count();
+        let active_goals_count = goals.len() - done_goals_count;
         let mut t = ToonBuilder::new();
         t.section(
             "counts",
-            &["goals", "tasks", "done", "wip", "review", "todo", "memories"],
+            &["goals", "active_goals", "done_goals", "tasks", "done", "wip", "review", "todo", "memories"],
             vec![vec![
                 goals_count.to_string(),
+                active_goals_count.to_string(),
+                done_goals_count.to_string(),
                 tasks_count.to_string(),
                 done_count.to_string(),
                 wip_count.to_string(),
@@ -577,7 +581,7 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
 
         let mut goal_rows = Vec::new();
         let mut task_rows = Vec::new();
-        for g in goals {
+        for g in goals.into_iter().filter(|g| g.status != "done") {
             let tasks = get_tasks_for_goal(conn, &g.id)?;
             let total = tasks.len();
             let done = tasks.iter().filter(|t| t.status == "done").count();
@@ -631,7 +635,9 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
     println!("  Memories    {}", memories_count);
     println!();
 
-    for g in get_goals(conn)? {
+    let all_goals = get_goals(conn)?;
+    let done_goals_ct = all_goals.iter().filter(|g| g.status == "done").count();
+    for g in all_goals.into_iter().filter(|g| g.status != "done") {
         let tasks = get_tasks_for_goal(conn, &g.id)?;
         let total = tasks.len();
         let done = tasks.iter().filter(|t| t.status == "done").count();
@@ -665,6 +671,14 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
                 );
             }
         }
+        println!();
+    }
+    if done_goals_ct > 0 {
+        println!(
+            "  ✓ {} completed goal{}  (imi goals to list)",
+            done_goals_ct,
+            if done_goals_ct == 1 { "" } else { "s" }
+        );
         println!();
     }
 
@@ -837,10 +851,10 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
     let week_ago = now - 7 * 24 * 3600;
 
     let direction = query_direction(conn, Some(week_ago), 10)?;
-    let decisions = query_decisions(conn, 10)?;
+    let decisions = query_decisions(conn, 15)?;
     let active_goals = query_active_goals(conn, 10)?;
     let wip = query_wip_tasks(conn, 10)?;
-    let memories = query_memories(conn, None, 10)?;
+    let memories = query_active_memories(conn, 15)?;
 
     if out.is_json() {
         let direction_json: Vec<Value> = direction
@@ -1131,12 +1145,12 @@ fn cmd_next(
                 .goal_id
                 .as_ref()
                 .and_then(|gid| get_goal(conn, gid).ok().flatten());
-            let decisions = query_decisions(conn, 6)?;
-            let direction = query_direction(conn, Some(now_ts() - 7 * 24 * 3600), 6)?;
+            let decisions = query_decisions(conn, 10)?;
+            let direction = query_direction(conn, Some(now_ts() - 7 * 24 * 3600), 8)?;
             let memories = if let Some(gid) = &task.goal_id {
-                query_memories(conn, Some(gid), 10)?
+                query_memories(conn, Some(gid), 15)?
             } else {
-                query_memories(conn, None, 10)?
+                query_active_memories(conn, 15)?
             };
             let last_failure: Option<String> = if let Some(gid) = &task.goal_id {
                 conn.query_row(
@@ -1968,7 +1982,13 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY, value TEXT NOT NULL
-);",
+);
+CREATE INDEX IF NOT EXISTS tasks_status_idx ON tasks(status);
+CREATE INDEX IF NOT EXISTS tasks_goal_id_idx ON tasks(goal_id);
+CREATE INDEX IF NOT EXISTS goals_status_idx ON goals(status);
+CREATE INDEX IF NOT EXISTS memories_goal_id_idx ON memories(goal_id);
+CREATE INDEX IF NOT EXISTS memories_created_at_idx ON memories(created_at);
+CREATE INDEX IF NOT EXISTS decisions_created_at_idx ON decisions(created_at);",
     )
     .map_err(|e| e.to_string())
 }
@@ -2153,7 +2173,13 @@ fn query_active_goals(conn: &Connection, limit: i64) -> Result<Vec<GoalRow>, Str
             "SELECT id, name, COALESCE(description,''), COALESCE(why,''), COALESCE(for_who,''), COALESCE(success_signal,''), COALESCE(status,'todo'), COALESCE(priority,'medium'), COALESCE(created_at,0)
              FROM goals
              WHERE status != 'done'
-             ORDER BY COALESCE(created_at,0) DESC LIMIT ?1",
+             ORDER BY CASE priority
+                WHEN 'critical' THEN 4
+                WHEN 'high' THEN 3
+                WHEN 'medium' THEN 2
+                WHEN 'low' THEN 1
+                ELSE 0 END DESC,
+                COALESCE(updated_at, created_at, 0) DESC LIMIT ?1",
         )
         .map_err(|e| e.to_string())?;
     let mapped = stmt.query_map(params![limit], |r| {
@@ -2270,6 +2296,45 @@ fn query_memories(conn: &Connection, goal_id: Option<&str>, limit: i64) -> Resul
             .map_err(|e| e.to_string())?;
         Ok(rows)
     }
+}
+
+// Memories scoped to non-done goals, with WIP-goal memories surfaced first.
+// At scale this keeps context relevant: finished-goal learnings don't pollute
+// the agent's view of what's actively being worked on.
+fn query_active_memories(conn: &Connection, limit: i64) -> Result<Vec<MemoryRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT m.id, m.goal_id, m.task_id, m.key, m.value,
+                    COALESCE(m.type,'learning'), COALESCE(m.source,'agent'), COALESCE(m.created_at,0)
+             FROM memories m
+             WHERE m.goal_id IS NULL
+                OR m.goal_id IN (SELECT id FROM goals WHERE status != 'done')
+             ORDER BY
+                CASE WHEN m.goal_id IN (
+                    SELECT DISTINCT goal_id FROM tasks WHERE status='in_progress' AND goal_id IS NOT NULL
+                ) THEN 1 ELSE 0 END DESC,
+                COALESCE(m.created_at,0) DESC
+             LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let mapped = stmt
+        .query_map(params![limit], |r| {
+            Ok(MemoryRow {
+                id: r.get(0)?,
+                goal_id: r.get(1)?,
+                task_id: r.get(2)?,
+                key: r.get(3)?,
+                value: r.get(4)?,
+                typ: r.get(5)?,
+                source: r.get(6)?,
+                created_at: r.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let rows = mapped
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
 }
 
 fn resolve_task(conn: &Connection, prefix: &str) -> Result<TaskRow, String> {

@@ -2621,165 +2621,117 @@ fn cmd_log(conn: &Connection, out: OutputCtx, note: String) -> Result<(), String
     emit_simple_ok(out, "Direction note added")
 }
 
-fn cmd_ops(conn: &Connection, out: OutputCtx) -> Result<(), String> {
-    println!("What are you building, why, and what changed?");
-    println!("(Press Enter twice to submit, or Ctrl+D)");
+fn ops_read_line(prompt: &str) -> Result<String, String> {
+    print!("{}", prompt);
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    Ok(line.trim().to_string())
+}
 
-    let mut input = String::new();
-    let mut consecutive_blank = 0usize;
+fn ops_read_multiline(prompt: &str) -> Result<String, String> {
+    println!("{}", prompt);
+    println!("(Enter a blank line when done)");
+    let mut lines = Vec::new();
     loop {
         let mut line = String::new();
         let bytes = io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
-        if bytes == 0 {
-            break;
-        }
-        let trimmed = line.trim_end();
-        if trimmed.trim().is_empty() {
-            consecutive_blank += 1;
-            if consecutive_blank >= 2 {
-                break;
-            }
-        } else {
-            consecutive_blank = 0;
-            input.push_str(trimmed);
-            input.push('\n');
-        }
+        if bytes == 0 { break; }
+        let t = line.trim_end().to_string();
+        if t.trim().is_empty() { break; }
+        lines.push(t);
+    }
+    Ok(lines.join(" "))
+}
+
+fn cmd_ops(conn: &Connection, out: OutputCtx) -> Result<(), String> {
+    println!("── imi ops ─────────────────────────────────────────");
+    println!("Structured PM intake. Answer each question freely —");
+    println!("no special phrasing needed. Ctrl+C to abort.\n");
+
+    // Q1 — what / the bet
+    let what = ops_read_multiline("1. What are you thinking about building or changing?\n   (Describe the problem or bet in your own words)")?;
+    if what.trim().is_empty() {
+        return Err("Aborted — no input.".to_string());
     }
 
-    let text = input.trim();
-    if text.is_empty() {
-        return Err("No input received".to_string());
-    }
+    // Q2 — why / the reasoning
+    let why = ops_read_multiline("\n2. Why does this matter? What problem does it solve, and for who?")?;
 
-    let mut goals: Vec<String> = Vec::new();
-    let mut decisions: Vec<(String, String)> = Vec::new();
-    let mut notes: Vec<String> = Vec::new();
+    // Q3 — what was considered and rejected
+    let rejected = ops_read_multiline("\n3. What did you consider and decide against? Why?")?;
 
-    for raw_line in text.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let lower = line.to_lowercase();
+    // Q4 — assumptions / what could invalidate this
+    let assumptions = ops_read_multiline("\n4. What assumptions is this based on? What would change your mind?")?;
 
-        let goal_markers = ["we want to build", "we're building", "the goal is"];
-        if goal_markers.iter().any(|m| lower.contains(m)) {
-            let mut goal_name = line.to_string();
-            for marker in goal_markers {
-                if let Some(idx) = lower.find(marker) {
-                    let start = idx + marker.len();
-                    let candidate = line[start..].trim();
-                    if !candidate.is_empty() {
-                        goal_name = candidate
-                            .trim_start_matches(':')
-                            .trim_start_matches('-')
-                            .trim()
-                            .to_string();
-                    }
-                    break;
-                }
-            }
-            goals.push(goal_name);
-        }
+    // Q5 — what changed (optional)
+    let changed = ops_read_multiline("\n5. What changed recently that prompted this? (skip if nothing new)")?;
 
-        let decision_markers = ["we decided", "we're going with", "instead of"];
-        if decision_markers.iter().any(|m| lower.contains(m)) {
-            let (what, why) = if let Some(pos) = lower.find("instead of") {
-                (
-                    line[..pos].trim().trim_end_matches(',').to_string(),
-                    format!("Instead of {}", line[pos + "instead of".len()..].trim()),
-                )
-            } else if let Some(pos) = lower.find("because") {
-                (
-                    line[..pos].trim().trim_end_matches(',').to_string(),
-                    line[pos + "because".len()..].trim().to_string(),
-                )
-            } else {
-                (line.to_string(), "Captured from imi ops conversation".to_string())
-            };
-            if !what.is_empty() {
-                decisions.push((what, why));
-            }
-        }
-
-        let note_markers = [
-            "because",
-            "the reason",
-            "assuming",
-            "context:",
-            "changed",
-            "new direction",
-            "update:",
-        ];
-        if note_markers.iter().any(|m| lower.contains(m)) {
-            notes.push(line.to_string());
-        }
-    }
-
-    println!("\nExtracted intent:");
-    if goals.is_empty() {
-        println!("- Goals: none detected");
+    // Q6 — name / label for the goal (derived or explicit)
+    let goal_name_prompt = format!("\n6. Short name for this goal (e.g. '{}'):\n   > ",
+        what.split_whitespace().take(5).collect::<Vec<_>>().join(" "));
+    let goal_name_raw = ops_read_line(&goal_name_prompt)?;
+    let goal_name = if goal_name_raw.trim().is_empty() {
+        what.split_whitespace().take(6).collect::<Vec<_>>().join(" ")
     } else {
-        println!("- Goals:");
-        for g in &goals {
-            println!("  - {g}");
-        }
-    }
-    if decisions.is_empty() {
-        println!("- Decisions: none detected");
-    } else {
-        println!("- Decisions:");
-        for (what, why) in &decisions {
-            println!("  - {what} (why: {why})");
-        }
-    }
-    if notes.is_empty() {
-        println!("- Direction notes: none detected");
-    } else {
-        println!("- Direction notes:");
-        for n in &notes {
-            println!("  - {n}");
-        }
-    }
+        goal_name_raw.trim().to_string()
+    };
 
-    print!("\nPersist this to IMI? [y/N]: ");
-    io::stdout().flush().map_err(|e| e.to_string())?;
-    let mut confirm = String::new();
-    io::stdin().read_line(&mut confirm).map_err(|e| e.to_string())?;
-    let confirmed = matches!(confirm.trim().to_lowercase().as_str(), "y" | "yes");
-    if !confirmed {
-        println!("Canceled.");
+    // Build structured output
+    println!("\n── Extracted intent ────────────────────────────────");
+    println!("Goal:        {}", goal_name);
+    println!("What:        {}", what);
+    if !why.trim().is_empty()         { println!("Why:         {}", why); }
+    if !rejected.trim().is_empty()    { println!("Rejected:    {}", rejected); }
+    if !assumptions.trim().is_empty() { println!("Assumptions: {}", assumptions); }
+    if !changed.trim().is_empty()     { println!("Changed:     {}", changed); }
+
+    // Compose direction note from full context
+    let mut direction_parts = vec![what.clone()];
+    if !why.trim().is_empty()         { direction_parts.push(format!("Why: {}", why)); }
+    if !assumptions.trim().is_empty() { direction_parts.push(format!("Assuming: {}", assumptions)); }
+    if !changed.trim().is_empty()     { direction_parts.push(format!("What changed: {}", changed)); }
+    let direction_note = direction_parts.join(" | ");
+
+    println!("\nThis will write:");
+    println!("  • 1 goal:           \"{}\"", goal_name);
+    if !rejected.trim().is_empty() {
+        println!("  • 1 decision:       what was chosen and what was rejected");
+    }
+    println!("  • 1 direction note: full reasoning captured above");
+
+    let confirm = ops_read_line("\nPersist to IMI? [y/N]: ")?;
+    if !matches!(confirm.to_lowercase().as_str(), "y" | "yes") {
+        println!("Canceled — nothing written.");
         return Ok(());
     }
 
-    let why = notes.first().cloned();
-    let context = if notes.is_empty() { None } else { Some(notes.join(" | ")) };
-    for goal in goals {
-        cmd_add_goal(
-            conn,
-            out,
-            goal.clone(),
-            Some(goal),
-            Some("medium".to_string()),
-            why.clone(),
-            None,
-            None,
-            vec![],
-            context.clone(),
-            None,
-        )?;
+    // Persist goal
+    cmd_add_goal(
+        conn, out,
+        goal_name.clone(),
+        Some(what.clone()),
+        Some("medium".to_string()),
+        Some(why.clone()),
+        None, None, vec![],
+        Some(direction_note.clone()),
+        None,
+    )?;
+
+    // Persist decision (what was chosen vs rejected)
+    if !rejected.trim().is_empty() {
+        let decision_what = format!("{} (not: {})", goal_name, rejected);
+        let decision_why = if why.trim().is_empty() { rejected.clone() } else { why.clone() };
+        cmd_decide(conn, out, decision_what, decision_why, Some(goal_name.clone()))?;
     }
-    for (what, why) in decisions {
-        cmd_decide(conn, out, what, why, None)?;
-    }
-    for note in notes {
-        cmd_log(conn, out, note)?;
-    }
+
+    // Persist direction note
+    cmd_log(conn, out, direction_note)?;
 
     if out.is_json() {
         println!("{}", json!({"ok": true}));
     } else {
-        println!("Structured intent saved.");
+        println!("\nIntent saved. Run `imi status` to see the new goal.");
     }
     Ok(())
 }

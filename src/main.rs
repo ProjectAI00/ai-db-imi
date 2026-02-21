@@ -5,8 +5,13 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::process::{Child, Command};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const VERSION: &str = "0.3.0";
 // PostHog EU public capture key — safe to commit (client-side key)
@@ -138,6 +143,45 @@ enum Commands {
         agent: Option<String>,
         task_id: String,
         summary: Vec<String>,
+        /// How the agent interpreted the goal and what it thought success looked like
+        #[arg(long)]
+        interpretation: Option<String>,
+        /// What the agent was uncertain about — where understanding may have drifted from intent
+        #[arg(long)]
+        uncertainty: Option<String>,
+    },
+    #[command(about = "Run hankweave for a task and auto-complete on success")]
+    Run {
+        task_id: String,
+        model: Option<String>,
+    },
+    #[command(about = "Run any command under IMI lifecycle automation")]
+    Wrap {
+        #[arg(long)]
+        agent: Option<String>,
+        task_id: String,
+        #[arg(long, default_value_t = 300)]
+        ping_secs: u64,
+        #[arg(long, default_value_t = 900)]
+        checkpoint_secs: u64,
+        #[arg(last = true, num_args = 1.., allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    #[command(about = "Orchestrate parallel task execution for a goal")]
+    Orchestrate {
+        goal_id: Option<String>,
+        #[arg(long, default_value_t = 4)]
+        workers: usize,
+        #[arg(long)]
+        agent_prefix: Option<String>,
+        #[arg(long, default_value_t = 300)]
+        ping_secs: u64,
+        #[arg(long, default_value_t = 900)]
+        checkpoint_secs: u64,
+        #[arg(long)]
+        max_tasks: Option<usize>,
+        #[arg(last = true, num_args = 0.., allow_hyphen_values = true)]
+        command: Vec<String>,
     },
     #[command(about = "Release a task lock and record why it's blocked")]
     Fail {
@@ -149,6 +193,11 @@ enum Commands {
     #[command(about = "Heartbeat to keep a task locked (~every 10 min)")]
     Ping {
         task_id: String,
+    },
+    #[command(about = "Save mid-task progress and refresh heartbeat")]
+    Checkpoint {
+        task_id: String,
+        note: Vec<String>,
     },
     #[command(alias = "ag", about = "Create a new goal")]
     AddGoal {
@@ -213,6 +262,14 @@ enum Commands {
     Instructions {
         target: Option<String>,
     },
+    #[command(about = "Verify whether a task's acceptance criteria is actually met")]
+    Verify {
+        task_id: String,
+    },
+    #[command(about = "Audit done tasks — flags those with no acceptance criteria or no completion summary")]
+    Audit,
+    #[command(about = "LLM reasoning pass — surfaces what doesn't make sense, what to kill, what's next")]
+    Think,
 }
 
 #[derive(Subcommand, Debug)]
@@ -366,13 +423,53 @@ fn dispatch(conn: &mut Connection, db_path: &Path, out: OutputCtx, command: Comm
             agent,
             task_id,
             summary,
-        } => cmd_complete(conn, out, agent, task_id, summary.join(" ")),
+            interpretation,
+            uncertainty,
+        } => cmd_complete(conn, out, agent, task_id, summary.join(" "), interpretation, uncertainty),
+        Commands::Run { task_id, model } => cmd_run(conn, db_path, out, task_id, model),
+        Commands::Wrap {
+            agent,
+            task_id,
+            ping_secs,
+            checkpoint_secs,
+            command,
+        } => cmd_wrap(
+            conn,
+            db_path,
+            out,
+            agent,
+            task_id,
+            ping_secs,
+            checkpoint_secs,
+            command,
+        ),
+        Commands::Orchestrate {
+            goal_id,
+            workers,
+            agent_prefix,
+            ping_secs,
+            checkpoint_secs,
+            max_tasks,
+            command,
+        } => cmd_orchestrate(
+            conn,
+            db_path,
+            out,
+            goal_id,
+            workers,
+            agent_prefix,
+            ping_secs,
+            checkpoint_secs,
+            max_tasks,
+            command,
+        ),
         Commands::Fail {
             agent,
             task_id,
             reason,
         } => cmd_fail(conn, out, agent, task_id, reason.join(" ")),
         Commands::Ping { task_id } => cmd_ping(conn, out, task_id),
+        Commands::Checkpoint { task_id, note } => cmd_checkpoint(conn, out, task_id, note.join(" ")),
         Commands::AddGoal {
             name,
             desc,
@@ -403,6 +500,9 @@ fn dispatch(conn: &mut Connection, db_path: &Path, out: OutputCtx, command: Comm
         Commands::Reset { force } => cmd_reset(conn, out, force),
         Commands::Stats => cmd_stats(conn, out),
         Commands::Instructions { target } => cmd_instructions(out, target),
+        Commands::Verify { task_id } => cmd_verify(conn, out, task_id),
+        Commands::Audit => cmd_audit(conn, out),
+        Commands::Think => cmd_think(conn, out),
     }
 }
 
@@ -432,8 +532,12 @@ fn command_key(command: &Commands) -> &'static str {
         Commands::Next { .. } => "next",
         Commands::Start { .. } => "start",
         Commands::Complete { .. } => "complete",
+        Commands::Run { .. } => "run",
+        Commands::Wrap { .. } => "wrap",
+        Commands::Orchestrate { .. } => "orchestrate",
         Commands::Fail { .. } => "fail",
         Commands::Ping { .. } => "ping",
+        Commands::Checkpoint { .. } => "checkpoint",
         Commands::AddGoal { .. } => "add-goal",
         Commands::AddTask { .. } => "add-task",
         Commands::Memory { .. } => "memory",
@@ -443,6 +547,9 @@ fn command_key(command: &Commands) -> &'static str {
         Commands::Reset { .. } => "reset",
         Commands::Stats => "stats",
         Commands::Instructions { .. } => "instructions",
+        Commands::Verify { .. } => "verify",
+        Commands::Audit => "audit",
+        Commands::Think => "think",
     }
 }
 
@@ -1303,19 +1410,137 @@ fn cmd_next(
 
 fn cmd_start(conn: &Connection, out: OutputCtx, agent: Option<String>, task_id: String) -> Result<(), String> {
     let agent_id = current_agent(agent.as_deref());
-    let task = resolve_task(conn, &task_id)?;
-    let now = now_ts();
-    conn.execute(
-        "UPDATE tasks SET status='in_progress', agent_id=?1, updated_at=?2 WHERE id=?3",
-        params![agent_id, now, task.id],
-    )
-    .map_err(|e| e.to_string())?;
-    if let Some(goal_id) = task.goal_id {
-        sync_goal(conn, &goal_id)?;
-    }
+    let task = ensure_task_in_progress(conn, &task_id, &agent_id)?;
 
     emit_simple_ok(out, &format!("Started task {}", task.id))?;
     Ok(())
+}
+
+struct LifecycleWatchdog {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl LifecycleWatchdog {
+    fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn spawn_lifecycle_watchdog(
+    db_path: PathBuf,
+    task_id: String,
+    goal_id: Option<String>,
+    agent_id: String,
+    ping_secs: u64,
+    checkpoint_secs: u64,
+) -> Option<LifecycleWatchdog> {
+    if ping_secs == 0 && checkpoint_secs == 0 {
+        return None;
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_ref = Arc::clone(&stop);
+    let handle = thread::spawn(move || {
+        let started = Instant::now();
+        let mut last_ping = Instant::now();
+        let mut last_checkpoint = Instant::now();
+
+        loop {
+            if stop_ref.load(Ordering::Relaxed) {
+                break;
+            }
+
+            thread::sleep(Duration::from_secs(1));
+            if stop_ref.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let now = now_ts();
+
+            if ping_secs > 0 && last_ping.elapsed().as_secs() >= ping_secs {
+                if let Ok(conn) = open_connection(&db_path) {
+                    let updated = conn
+                        .execute(
+                            "UPDATE tasks SET updated_at=?1, last_ping_at=?1 WHERE id=?2 AND status='in_progress'",
+                            params![now, task_id.clone()],
+                        )
+                        .unwrap_or(0);
+                    if updated == 0 {
+                        break;
+                    }
+                }
+                last_ping = Instant::now();
+            }
+
+            if checkpoint_secs > 0 && last_checkpoint.elapsed().as_secs() >= checkpoint_secs {
+                if let Ok(conn) = open_connection(&db_path) {
+                    let elapsed_minutes = (started.elapsed().as_secs() / 60).max(1);
+                    let note = format!(
+                        "Auto-checkpoint: still running via IMI wrapper ({}m elapsed)",
+                        elapsed_minutes
+                    );
+                    let _ = conn.execute(
+                        "INSERT INTO memories (id, goal_id, task_id, key, value, type, reasoning, source, created_at)
+                         VALUES (?1, ?2, ?3, 'checkpoint', ?4, 'checkpoint', ?4, ?5, ?6)",
+                        params![gen_id(), goal_id.clone(), task_id.clone(), note, agent_id.clone(), now],
+                    );
+                    let updated = conn
+                        .execute(
+                            "UPDATE tasks SET updated_at=?1, last_ping_at=?1 WHERE id=?2 AND status='in_progress'",
+                            params![now, task_id.clone()],
+                        )
+                        .unwrap_or(0);
+                    if updated == 0 {
+                        break;
+                    }
+                }
+                last_checkpoint = Instant::now();
+                last_ping = Instant::now();
+            }
+        }
+    });
+
+    Some(LifecycleWatchdog {
+        stop,
+        handle: Some(handle),
+    })
+}
+
+fn ensure_task_in_progress(conn: &Connection, task_id: &str, agent_id: &str) -> Result<TaskRow, String> {
+    let mut task = resolve_task(conn, task_id)?;
+    if task.status == "done" {
+        return Err("task is already done".to_string());
+    }
+    if task.status == "in_progress" {
+        if let Some(owner) = &task.agent_id {
+            if !owner.is_empty() && owner != agent_id {
+                return Err(format!("task already in progress by {owner}"));
+            }
+        }
+    }
+
+    let now = now_ts();
+    conn.execute(
+        "UPDATE tasks SET status='in_progress', agent_id=?1, updated_at=?2, last_ping_at=?2 WHERE id=?3",
+        params![agent_id, now, task.id],
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(goal_id) = &task.goal_id {
+        sync_goal(conn, goal_id)?;
+    }
+
+    task.status = "in_progress".to_string();
+    task.agent_id = Some(agent_id.to_string());
+    Ok(task)
+}
+
+fn task_status(conn: &Connection, task_id: &str) -> Result<String, String> {
+    conn.query_row("SELECT status FROM tasks WHERE id=?1", params![task_id], |r| r.get(0))
+        .map_err(|e| e.to_string())
 }
 
 fn cmd_complete(
@@ -1324,6 +1549,8 @@ fn cmd_complete(
     agent: Option<String>,
     task_id: String,
     summary: String,
+    interpretation: Option<String>,
+    uncertainty: Option<String>,
 ) -> Result<(), String> {
     let agent_id = current_agent(agent.as_deref());
     let task = resolve_task(conn, &task_id)?;
@@ -1354,11 +1581,450 @@ fn cmd_complete(
     )
     .map_err(|e| e.to_string())?;
 
+    if let Some(interp) = interpretation {
+        if !interp.trim().is_empty() {
+            conn.execute(
+                "INSERT INTO memories (id, goal_id, task_id, key, value, type, reasoning, source, created_at)
+                 VALUES (?1, ?2, ?3, 'interpretation', ?4, 'completion', ?4, ?5, ?6)",
+                params![gen_id(), task.goal_id, task.id, interp, agent_id, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    if let Some(unc) = uncertainty {
+        if !unc.trim().is_empty() {
+            conn.execute(
+                "INSERT INTO memories (id, goal_id, task_id, key, value, type, reasoning, source, created_at)
+                 VALUES (?1, ?2, ?3, 'uncertainty', ?4, 'completion', ?4, ?5, ?6)",
+                params![gen_id(), task.goal_id, task.id, unc, agent_id, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
     if let Some(goal_id) = task.goal_id {
         sync_goal(conn, &goal_id)?;
     }
 
     emit_simple_ok(out, "Task completed")?;
+    Ok(())
+}
+
+fn cmd_run(
+    conn: &Connection,
+    db_path: &Path,
+    out: OutputCtx,
+    task_id: String,
+    model: Option<String>,
+) -> Result<(), String> {
+    let id = resolve_id_prefix(conn, "tasks", &task_id)?
+        .ok_or_else(|| format!("task not found: {task_id}"))?;
+    let agent_id = current_agent(None);
+    let claimed = ensure_task_in_progress(conn, &id, &agent_id)?;
+    let task: (String, String, String, String, String, String, String) = conn
+        .query_row(
+            "SELECT id, title, COALESCE(description,''), COALESCE(acceptance_criteria,''), COALESCE(relevant_files,'[]'), COALESCE(tools,'[]'), COALESCE(workspace_path,'')
+             FROM tasks WHERE id=?1",
+            params![id],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    let relevant_files: Vec<String> = serde_json::from_str(&task.4).unwrap_or_default();
+    let tools: Vec<String> = serde_json::from_str(&task.5).unwrap_or_default();
+    let relevant_files_text = if relevant_files.is_empty() {
+        "- (none)".to_string()
+    } else {
+        relevant_files
+            .iter()
+            .map(|f| format!("- {f}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let tools_text = if tools.is_empty() {
+        "- (none)".to_string()
+    } else {
+        tools
+            .iter()
+            .map(|t| format!("- {t}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let imi_dir = db_path
+        .parent()
+        .ok_or_else(|| "invalid db path".to_string())?;
+    let run_dir = imi_dir.join("runs").join(&task.0);
+    fs::create_dir_all(&run_dir).map_err(|e| format!("failed to create run dir: {e}"))?;
+
+    let context_md = format!(
+        "# Task: {title}\n\n## Description\n{description}\n\n## Acceptance Criteria\n{acceptance}\n\n## Relevant Files\n{relevant}\n\n## Tools\n{tools}\n\n## Workspace Path\n{workspace}\n",
+        title = task.1,
+        description = if task.2.is_empty() { "(none)" } else { &task.2 },
+        acceptance = if task.3.is_empty() { "(none)" } else { &task.3 },
+        relevant = relevant_files_text,
+        tools = tools_text,
+        workspace = if task.6.is_empty() { "(none)" } else { &task.6 },
+    );
+    fs::write(run_dir.join("context.md"), context_md)
+        .map_err(|e| format!("failed to write context.md: {e}"))?;
+
+    let selected_model = model.unwrap_or_else(|| "claude-sonnet-4-5".to_string());
+    let hank_json = json!({
+        "globalSystemPromptFile": "../../prompts/execute-mode.md",
+        "codons": [
+            {
+                "model": selected_model,
+                "promptFile": "context.md",
+                "continuationMode": "fresh"
+            }
+        ]
+    });
+    fs::write(
+        run_dir.join("hank.json"),
+        serde_json::to_string_pretty(&hank_json).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("failed to write hank.json: {e}"))?;
+
+    let watchdog = spawn_lifecycle_watchdog(
+        db_path.to_path_buf(),
+        task.0.clone(),
+        claimed.goal_id.clone(),
+        agent_id.clone(),
+        300,
+        900,
+    );
+    let status = Command::new("bunx")
+        .arg("hankweave")
+        .current_dir(&run_dir)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status();
+    if let Some(watchdog) = watchdog {
+        watchdog.stop();
+    }
+    let status = match status {
+        Ok(status) => status,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let reason = "hankweave not found. Install with: npm install -g hankweave".to_string();
+            if task_status(conn, &task.0).unwrap_or_default() == "in_progress" {
+                let _ = cmd_fail(conn, out, Some(agent_id.clone()), task.0.clone(), reason.clone());
+            }
+            return Err(reason);
+        }
+        Err(e) => {
+            let reason = format!("failed to run hankweave: {e}");
+            if task_status(conn, &task.0).unwrap_or_default() == "in_progress" {
+                let _ = cmd_fail(conn, out, Some(agent_id.clone()), task.0.clone(), reason.clone());
+            }
+            return Err(reason);
+        }
+    };
+    if !status.success() {
+        let reason = format!("hankweave exited with status: {status}");
+        if task_status(conn, &task.0).unwrap_or_default() == "in_progress" {
+            let _ = cmd_fail(conn, out, Some(agent_id.clone()), task.0.clone(), reason.clone());
+        }
+        return Err(reason);
+    }
+
+    if task_status(conn, &task.0).unwrap_or_default() == "done" {
+        emit_simple_ok(out, "Task already completed")?;
+        return Ok(());
+    }
+
+    let summary = fs::read_to_string(run_dir.join("summary.md"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Completed via imi run (no summary.md)".to_string());
+    cmd_complete(conn, out, Some(agent_id), task.0, summary, None, None)
+}
+
+fn cmd_wrap(
+    conn: &Connection,
+    db_path: &Path,
+    out: OutputCtx,
+    agent: Option<String>,
+    task_id: String,
+    ping_secs: u64,
+    checkpoint_secs: u64,
+    command: Vec<String>,
+) -> Result<(), String> {
+    let first = command
+        .first()
+        .ok_or_else(|| "command is required after --".to_string())?;
+    let agent_id = current_agent(agent.as_deref());
+    let task = ensure_task_in_progress(conn, &task_id, &agent_id)?;
+    let workspace_path: String = conn
+        .query_row(
+            "SELECT COALESCE(workspace_path,'') FROM tasks WHERE id=?1",
+            params![task.id.clone()],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+
+    let watchdog = spawn_lifecycle_watchdog(
+        db_path.to_path_buf(),
+        task.id.clone(),
+        task.goal_id.clone(),
+        agent_id.clone(),
+        ping_secs,
+        checkpoint_secs,
+    );
+
+    let mut child = Command::new(first);
+    child
+        .args(command.iter().skip(1))
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit());
+
+    if !workspace_path.trim().is_empty() {
+        let workspace = PathBuf::from(workspace_path.trim());
+        if workspace.exists() {
+            child.current_dir(workspace);
+        }
+    }
+
+    let status = child.status();
+    if let Some(watchdog) = watchdog {
+        watchdog.stop();
+    }
+
+    let status = match status {
+        Ok(status) => status,
+        Err(e) => {
+            let reason = format!("wrapped command failed to start: {e}");
+            if task_status(conn, &task.id).unwrap_or_default() == "in_progress" {
+                let _ = cmd_fail(conn, out, Some(agent_id.clone()), task.id.clone(), reason.clone());
+            }
+            return Err(reason);
+        }
+    };
+
+    let current_status = task_status(conn, &task.id).unwrap_or_default();
+    if status.success() {
+        if current_status == "done" {
+            emit_simple_ok(out, "Wrapped command succeeded (task already completed)")?;
+            return Ok(());
+        }
+        let summary = format!("Wrapped command succeeded: {}", command.join(" "));
+        return cmd_complete(conn, out, Some(agent_id), task.id, summary, None, None);
+    }
+
+    let reason = format!("wrapped command exited with status {status}: {}", command.join(" "));
+    if current_status == "in_progress" {
+        let _ = cmd_fail(conn, out, Some(agent_id), task.id, reason.clone());
+    }
+    Err(reason)
+}
+
+struct OrchestrateWorker {
+    task_id: String,
+    agent_id: String,
+    child: Child,
+}
+
+fn spawn_orchestrate_worker(
+    db_path: &Path,
+    task_id: &str,
+    agent_id: &str,
+    ping_secs: u64,
+    checkpoint_secs: u64,
+    command: &[String],
+) -> Result<Child, String> {
+    let exe = env::current_exe().map_err(|e| format!("failed to locate current executable: {e}"))?;
+    let mut child_cmd = Command::new(exe);
+    child_cmd
+        .env("IMI_DB", db_path.display().to_string())
+        .env("IMI_AGENT_ID", agent_id)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit());
+
+    if command.is_empty() {
+        child_cmd.args(["run", task_id]);
+    } else {
+        child_cmd
+            .args([
+                "wrap",
+                task_id,
+                "--agent",
+                agent_id,
+                "--ping-secs",
+                &ping_secs.to_string(),
+                "--checkpoint-secs",
+                &checkpoint_secs.to_string(),
+                "--",
+            ])
+            .args(command);
+    }
+
+    child_cmd
+        .spawn()
+        .map_err(|e| format!("failed to spawn worker process: {e}"))
+}
+
+fn cmd_orchestrate(
+    conn: &mut Connection,
+    db_path: &Path,
+    out: OutputCtx,
+    goal_id: Option<String>,
+    workers: usize,
+    agent_prefix: Option<String>,
+    ping_secs: u64,
+    checkpoint_secs: u64,
+    max_tasks: Option<usize>,
+    command: Vec<String>,
+) -> Result<(), String> {
+    if workers == 0 {
+        return Err("workers must be >= 1".to_string());
+    }
+
+    let goal = if let Some(goal_id) = goal_id {
+        Some(
+            resolve_id_prefix(conn, "goals", &goal_id)?
+                .ok_or_else(|| format!("goal not found: {goal_id}"))?,
+        )
+    } else {
+        None
+    };
+
+    let prefix = agent_prefix.unwrap_or_else(|| "imi-worker".to_string());
+    let limit = max_tasks.unwrap_or(usize::MAX);
+    let mut active: Vec<OrchestrateWorker> = Vec::new();
+    let mut launched = 0usize;
+    let mut done = 0usize;
+    let mut failed = 0usize;
+    let mut no_more_tasks = false;
+    let mut race_guard = 0usize;
+
+    loop {
+        while !no_more_tasks && active.len() < workers && launched < limit {
+            let worker_agent = format!("{prefix}-{}", launched + 1);
+            let claim = claim_next_task(conn, goal.as_deref(), &worker_agent)?;
+            match claim {
+                ClaimResult::NoTasks => {
+                    no_more_tasks = true;
+                    break;
+                }
+                ClaimResult::RaceLost => {
+                    race_guard += 1;
+                    if race_guard > workers * 8 {
+                        no_more_tasks = true;
+                        break;
+                    }
+                    continue;
+                }
+                ClaimResult::Claimed(task) => {
+                    race_guard = 0;
+                    launched += 1;
+                    match spawn_orchestrate_worker(
+                        db_path,
+                        &task.id,
+                        &worker_agent,
+                        ping_secs,
+                        checkpoint_secs,
+                        &command,
+                    ) {
+                        Ok(child) => active.push(OrchestrateWorker {
+                            task_id: task.id,
+                            agent_id: worker_agent,
+                            child,
+                        }),
+                        Err(e) => {
+                            failed += 1;
+                            let _ = cmd_fail(conn, out, Some(worker_agent), task.id, e.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut idx = 0usize;
+        while idx < active.len() {
+            let status = active[idx].child.try_wait().map_err(|e| e.to_string())?;
+            match status {
+                None => idx += 1,
+                Some(status) => {
+                    if status.success() {
+                        done += 1;
+                    } else {
+                        failed += 1;
+                        let reason = format!("worker {} exited with status {status}", active[idx].agent_id);
+                        let _ = cmd_fail(
+                            conn,
+                            out,
+                            Some(active[idx].agent_id.clone()),
+                            active[idx].task_id.clone(),
+                            reason,
+                        );
+                    }
+                    active.swap_remove(idx);
+                }
+            }
+        }
+
+        if (no_more_tasks || launched >= limit) && active.is_empty() {
+            break;
+        }
+
+        if active.is_empty() && no_more_tasks {
+            break;
+        }
+
+        thread::sleep(Duration::from_millis(400));
+    }
+
+    if out.is_json() {
+        println!(
+            "{}",
+            json!({
+                "ok": failed == 0,
+                "goal_id": goal,
+                "workers": workers,
+                "launched": launched,
+                "completed": done,
+                "failed": failed
+            })
+        );
+    } else if out.is_toon() {
+        let mut t = ToonBuilder::new();
+        t.section(
+            "orchestrate",
+            &["workers", "launched", "completed", "failed"],
+            vec![vec![
+                workers.to_string(),
+                launched.to_string(),
+                done.to_string(),
+                failed.to_string(),
+            ]],
+        );
+        print!("{}", t.finish());
+    } else {
+        println!(
+            "Orchestrate finished: launched={} completed={} failed={}",
+            launched, done, failed
+        );
+    }
+
+    if failed > 0 {
+        return Err(format!("orchestrate finished with {failed} failed worker(s)"));
+    }
+
     Ok(())
 }
 
@@ -1420,7 +2086,7 @@ fn cmd_ping(conn: &Connection, out: OutputCtx, task_id: String) -> Result<(), St
     let now = now_ts();
     let n = conn
         .execute(
-            "UPDATE tasks SET updated_at=?1 WHERE id=?2 AND status='in_progress'",
+            "UPDATE tasks SET updated_at=?1, last_ping_at=?1 WHERE id=?2 AND status='in_progress'",
             params![now, id],
         )
         .map_err(|e| e.to_string())?;
@@ -1429,6 +2095,42 @@ fn cmd_ping(conn: &Connection, out: OutputCtx, task_id: String) -> Result<(), St
     }
 
     emit_simple_ok(out, "pong")?;
+    Ok(())
+}
+
+fn cmd_checkpoint(conn: &Connection, out: OutputCtx, task_id: String, note: String) -> Result<(), String> {
+    if note.trim().is_empty() {
+        return Err("progress note is required".to_string());
+    }
+
+    let task = resolve_task(conn, &task_id)?;
+    if task.status != "in_progress" {
+        return Err("task is not in progress".to_string());
+    }
+
+    let now = now_ts();
+    let agent_id = current_agent(None);
+    conn.execute(
+        "INSERT INTO memories (id, goal_id, task_id, key, value, type, reasoning, source, created_at)
+         VALUES (?1, ?2, ?3, 'checkpoint', ?4, 'checkpoint', ?4, ?5, ?6)",
+        params![gen_id(), task.goal_id, task.id, note, agent_id, now],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "UPDATE tasks SET updated_at=?1, last_ping_at=?1 WHERE id=?2 AND status='in_progress'",
+        params![now, task.id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    if out.is_json() {
+        println!(
+            "{}",
+            json!({"ok": true, "task_id": task.id, "message": format!("Checkpoint saved — {}", note)})
+        );
+    } else {
+        println!("Checkpoint saved — {}", note);
+    }
     Ok(())
 }
 
@@ -1764,7 +2466,7 @@ fn cmd_stats(conn: &Connection, out: OutputCtx) -> Result<(), String> {
         .unwrap_or(0);
     let stale_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM tasks WHERE status='in_progress' AND COALESCE(updated_at,created_at,0) < ?1",
+            "SELECT COUNT(*) FROM tasks WHERE status='in_progress' AND COALESCE(last_ping_at,updated_at,created_at,0) < ?1",
             params![now - 1800],
             |r| r.get(0),
         )
@@ -1956,7 +2658,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   plan_id TEXT, execution_format TEXT DEFAULT 'json', execution_payload TEXT,
   workspace_path TEXT, relevant_files TEXT DEFAULT '[]', tools TEXT DEFAULT '[]',
   acceptance_criteria TEXT, created_at INTEGER, updated_at INTEGER,
-  completed_at INTEGER, created_by TEXT NOT NULL DEFAULT 'user'
+  completed_at INTEGER, last_ping_at INTEGER, created_by TEXT NOT NULL DEFAULT 'user'
 );
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY, goal_id TEXT REFERENCES goals(id) ON DELETE SET NULL,
@@ -1990,7 +2692,22 @@ CREATE INDEX IF NOT EXISTS memories_goal_id_idx ON memories(goal_id);
 CREATE INDEX IF NOT EXISTS memories_created_at_idx ON memories(created_at);
 CREATE INDEX IF NOT EXISTS decisions_created_at_idx ON decisions(created_at);",
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    let has_last_ping: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM pragma_table_info('tasks') WHERE name='last_ping_at' LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if has_last_ping.is_none() {
+        conn.execute("ALTER TABLE tasks ADD COLUMN last_ping_at INTEGER", [])
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
 
 fn register_workspace(conn: &Connection, cwd: &Path) -> Result<(), String> {
@@ -2376,7 +3093,7 @@ fn release_stale_locks(conn: &Connection) -> Result<usize, String> {
     conn.execute(
         "UPDATE tasks
          SET status='todo', agent_id=NULL, updated_at=?1
-         WHERE status='in_progress' AND COALESCE(updated_at, created_at, 0) < ?2",
+         WHERE status='in_progress' AND COALESCE(last_ping_at, updated_at, created_at, 0) < ?2",
         params![now, now - 1800],
     )
     .map_err(|e| e.to_string())
@@ -2461,7 +3178,7 @@ fn claim_next_task(conn: &mut Connection, goal_id: Option<&str>, agent: &str) ->
 
     let updated = tx
         .execute(
-            "UPDATE tasks SET status='in_progress', agent_id=?1, updated_at=?2 WHERE id=?3 AND status='todo'",
+            "UPDATE tasks SET status='in_progress', agent_id=?1, updated_at=?2, last_ping_at=?2 WHERE id=?3 AND status='todo'",
             params![agent, now, candidate.id],
         )
         .map_err(|e| e.to_string())?;
@@ -2737,4 +3454,348 @@ fn instructions_copilot() -> &'static str {
 
 fn instructions_windsurf() -> &'static str {
     "# IMI Ops for Windsurf\n\nBoot:\nimi status\nimi context\n\nExecution loop:\nimi next\nimi start <task_id>\nimi complete <task_id> \"summary\"\nimi memory add <goal_id> <key> \"insight\""
+}
+
+fn cmd_verify(conn: &Connection, out: OutputCtx, task_prefix: String) -> Result<(), String> {
+    let task_id = resolve_id_prefix(conn, "tasks", &task_prefix)?
+        .ok_or_else(|| format!("task not found: {task_prefix}"))?;
+
+    let (title, status, description, acceptance_criteria, relevant_files, why): (String, String, String, Option<String>, String, String) = conn
+        .query_row(
+            "SELECT title, status, description, acceptance_criteria, relevant_files, why FROM tasks WHERE id=?1",
+            params![task_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    // Fetch completion memories
+    let completion_summary: Option<String> = conn
+        .query_row(
+            "SELECT value FROM memories WHERE task_id=?1 AND key='completion_summary' ORDER BY created_at DESC LIMIT 1",
+            params![task_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let interpretation: Option<String> = conn
+        .query_row(
+            "SELECT value FROM memories WHERE task_id=?1 AND key='interpretation' ORDER BY created_at DESC LIMIT 1",
+            params![task_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let uncertainty: Option<String> = conn
+        .query_row(
+            "SELECT value FROM memories WHERE task_id=?1 AND key='uncertainty' ORDER BY created_at DESC LIMIT 1",
+            params![task_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    // Determine verification flags
+    let has_criteria = acceptance_criteria.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let has_summary = completion_summary.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let is_done = status == "done";
+
+    let unverified = !has_criteria || !has_summary;
+
+    if out.is_json() {
+        println!("{}", json!({
+            "id": task_id,
+            "title": title,
+            "status": status,
+            "has_acceptance_criteria": has_criteria,
+            "has_completion_summary": has_summary,
+            "unverified": unverified,
+            "acceptance_criteria": acceptance_criteria,
+            "completion_summary": completion_summary,
+            "interpretation": interpretation,
+            "uncertainty": uncertainty,
+            "description": description,
+            "relevant_files": relevant_files,
+            "why": why,
+        }));
+        return Ok(());
+    }
+
+    println!("Verify: {} [{}]", title, task_id);
+    println!("Status: {}", status);
+    println!();
+
+    if has_criteria {
+        println!("Acceptance criteria:");
+        println!("  {}", acceptance_criteria.as_deref().unwrap_or(""));
+    } else {
+        println!("⚠  No acceptance criteria — nothing to verify against");
+    }
+    println!();
+
+    if has_summary {
+        println!("Completion summary:");
+        println!("  {}", completion_summary.as_deref().unwrap_or(""));
+    } else if is_done {
+        println!("⚠  Marked done but no completion summary written");
+    } else {
+        println!("No completion summary (task not done yet)");
+    }
+
+    if let Some(ref interp) = interpretation {
+        println!();
+        println!("Agent interpretation:");
+        println!("  {}", interp);
+    }
+
+    if let Some(ref unc) = uncertainty {
+        println!();
+        println!("Agent uncertainty:");
+        println!("  {}", unc);
+    }
+
+    if !description.is_empty() {
+        println!();
+        println!("Description: {}", description);
+    }
+    if !why.is_empty() {
+        println!("Why: {}", why);
+    }
+
+    let rf: Vec<String> = serde_json::from_str(&relevant_files).unwrap_or_default();
+    if !rf.is_empty() {
+        println!();
+        println!("Relevant files:");
+        for f in &rf {
+            let exists = Path::new(f).exists();
+            println!("  {} {}", if exists { "✓" } else { "✗" }, f);
+        }
+    }
+
+    println!();
+    if unverified {
+        println!("UNVERIFIED — agent should check if this work actually exists in the codebase.");
+    } else {
+        println!("Verifiable — criteria and summary present. Agent should confirm criteria is met.");
+    }
+
+    Ok(())
+}
+
+fn cmd_audit(conn: &Connection, out: OutputCtx) -> Result<(), String> {
+    // Find tasks that are done but missing acceptance_criteria or completion_summary
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.title, t.status, t.goal_id,
+                t.acceptance_criteria,
+                (SELECT value FROM memories WHERE task_id=t.id AND key='completion_summary' ORDER BY created_at DESC LIMIT 1) as summary
+         FROM tasks t
+         WHERE t.status='done'
+         ORDER BY t.updated_at DESC"
+    ).map_err(|e| e.to_string())?;
+
+    struct AuditRow {
+        id: String,
+        title: String,
+        goal_id: String,
+        has_criteria: bool,
+        has_summary: bool,
+    }
+
+    let rows: Vec<AuditRow> = stmt
+        .query_map([], |r| {
+            let ac: Option<String> = r.get(4)?;
+            let sum: Option<String> = r.get(5)?;
+            Ok(AuditRow {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                goal_id: r.get(3)?,
+                has_criteria: ac.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false),
+                has_summary: sum.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false),
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let unverified: Vec<&AuditRow> = rows.iter().filter(|r| !r.has_criteria || !r.has_summary).collect();
+    let verified: Vec<&AuditRow> = rows.iter().filter(|r| r.has_criteria && r.has_summary).collect();
+
+    if out.is_json() {
+        let unverified_json: Vec<Value> = unverified.iter().map(|r| json!({
+            "id": r.id,
+            "title": r.title,
+            "goal_id": r.goal_id,
+            "has_acceptance_criteria": r.has_criteria,
+            "has_completion_summary": r.has_summary,
+        })).collect();
+        println!("{}", json!({
+            "total_done": rows.len(),
+            "verified": verified.len(),
+            "unverified": unverified.len(),
+            "unverified_tasks": unverified_json,
+        }));
+        return Ok(());
+    }
+
+    println!("Audit: done tasks ({} total, {} verified, {} unverified)", rows.len(), verified.len(), unverified.len());
+    println!();
+
+    if unverified.is_empty() {
+        println!("All done tasks have acceptance criteria and completion summaries.");
+    } else {
+        println!("Unverified ({}):", unverified.len());
+        for r in &unverified {
+            let flags = format!("{}{}",
+                if !r.has_criteria { " no-criteria" } else { "" },
+                if !r.has_summary { " no-summary" } else { "" },
+            );
+            println!("  ⚠  {} [{}]{}", r.title, r.id, flags);
+        }
+    }
+
+    if !verified.is_empty() {
+        println!();
+        println!("Verified ({}):", verified.len());
+        for r in &verified {
+            println!("  ✓  {} [{}]", r.title, r.id);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_think(conn: &Connection, _out: OutputCtx) -> Result<(), String> {
+    let context = build_think_context(conn)?;
+
+    println!("You are a sharp product manager reviewing the state of a product ops database (IMI).");
+    println!("IMI is the translation layer between human product thinking and AI agent execution.");
+    println!("Your job is not to audit task completion — it is to reason about strategic alignment.");
+    println!();
+    println!("Ask: given what was decided and why, are we still working on the right thing?");
+    println!("Read the direction notes as the human thinking process. Read the decisions as bets that were made.");
+    println!("Read the goals as what the team believes is worth building right now.");
+    println!();
+    println!("Surface: what no longer aligns with stated intent. What bets are stale or based on outdated assumptions.");
+    println!("What a sharp PM would challenge or kill. What is missing that the team has not articulated yet.");
+    println!("What the real next move is given everything you know.");
+    println!();
+    println!("Do not summarize what exists. Do not list completed tasks. Reason about whether the work still serves the intent behind it.");
+    println!("Be direct. Be ruthless about misalignment. This is not a status report — it is a strategic alignment check.");
+    println!();
+    println!("---");
+    println!();
+    println!("{}", context);
+    println!("---");
+    println!();
+    println!("Given what was decided, why it was decided, and how direction has evolved —");
+    println!("are we working on the right things? What no longer aligns with intent?");
+    println!("What would you challenge or kill? What is the team not seeing?");
+    println!("What is the single most important thing to clarify or act on right now?");
+    Ok(())
+}
+
+fn build_think_context(conn: &Connection) -> Result<String, String> {
+    let mut out = String::new();
+
+    // Goals
+    out.push_str("## Goals\n");
+    let mut stmt = conn.prepare(
+        "SELECT id, name, status, priority, why, description FROM goals ORDER BY priority DESC, created_at"
+    ).map_err(|e| e.to_string())?;
+    let goals: Vec<(String, String, String, String, String, String)> = stmt
+        .query_map([], |r| Ok((
+            r.get(0)?,
+            r.get(1)?,
+            r.get(2)?,
+            r.get(3)?,
+            r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+        )))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    for (id, name, status, priority, why, desc) in &goals {
+        out.push_str(&format!("- [{}] {} ({}, {}) — why: {} | {}\n", status, name, id, priority, why, desc));
+    }
+
+    // Tasks grouped by status
+    out.push_str("\n## Tasks\n");
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.title, t.status, t.why, t.description, t.acceptance_criteria,
+                (SELECT value FROM memories WHERE task_id=t.id AND key='completion_summary' ORDER BY created_at DESC LIMIT 1) as summary,
+                g.name as goal_name
+         FROM tasks t LEFT JOIN goals g ON t.goal_id=g.id
+         ORDER BY t.status, t.priority DESC"
+    ).map_err(|e| e.to_string())?;
+    let tasks: Vec<(String, String, String, String, String, String, String, String)> = stmt
+        .query_map([], |r| Ok((
+            r.get(0)?,
+            r.get(1)?,
+            r.get(2)?,
+            r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+            r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+        )))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    for (id, title, status, why, _desc, criteria, summary, goal_name) in &tasks {
+        out.push_str(&format!("- [{}] {} [{}] (goal: {})\n", status, title, id, goal_name));
+        if !why.is_empty() { out.push_str(&format!("  why: {}\n", why)); }
+        if !criteria.is_empty() { out.push_str(&format!("  criteria: {}\n", criteria)); }
+        if !summary.is_empty() { out.push_str(&format!("  done summary: {}\n", &summary[..summary.len().min(300)])); }
+    }
+
+    // Decisions
+    out.push_str("\n## Decisions\n");
+    let mut stmt = conn.prepare(
+        "SELECT what, why, affects FROM decisions ORDER BY created_at DESC LIMIT 10"
+    ).map_err(|e| e.to_string())?;
+    let decisions: Vec<(String, String, String)> = stmt
+        .query_map([], |r| Ok((
+            r.get(0)?,
+            r.get(1)?,
+            r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        )))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    for (what, why, affects) in &decisions {
+        out.push_str(&format!("- {} — {}", what, why));
+        if !affects.is_empty() { out.push_str(&format!(" (affects: {})", affects)); }
+        out.push('\n');
+    }
+
+    // Direction notes
+    out.push_str("\n## Direction Notes\n");
+    let mut stmt = conn.prepare(
+        "SELECT content FROM direction_notes ORDER BY created_at DESC LIMIT 5"
+    ).map_err(|e| e.to_string())?;
+    let notes: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    for note in &notes {
+        out.push_str(&format!("- {}\n", note));
+    }
+
+    // Recent memories
+    out.push_str("\n## Recent Memories (last 10)\n");
+    let mut stmt = conn.prepare(
+        "SELECT key, value, type FROM memories ORDER BY created_at DESC LIMIT 10"
+    ).map_err(|e| e.to_string())?;
+    let mems: Vec<(String, String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    for (key, value, kind) in &mems {
+        out.push_str(&format!("[{}] {}: {}\n", kind, key, &value[..value.len().min(300)]));
+    }
+
+    Ok(out)
 }

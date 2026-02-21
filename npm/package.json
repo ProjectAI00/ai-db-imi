@@ -1,6 +1,6 @@
 {
   "name": "@imi-ai/imi",
-  "version": "0.3.2",
+  "version": "0.3.4",
   "description": "IMI — the persistent brain for AI agents. One command to install and initialize.",
   "bin": {
     "imi": "./run.js"

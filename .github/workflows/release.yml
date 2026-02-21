@@ -93,8 +93,6 @@ jobs:
             p.name = '@imi-ai/imi';
             require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2) + '\n');
           "
-          npm install --ignore-scripts
-          npm run build
           npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

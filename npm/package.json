@@ -3,14 +3,7 @@
   "version": "0.3.4",
   "description": "IMI — the persistent brain for AI agents. One command to install and initialize.",
   "bin": {
-    "imi": "./run.js"
-  },
-  "scripts": {
-    "build": "tsc -p tsconfig.json"
-  },
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
+    "imi": "./run.ts"
   },
   "keywords": ["ai", "agents", "cli", "imi", "memory", "persistent"],
   "author": "aibyimi",
@@ -20,6 +13,6 @@
     "url": "https://github.com/ProjectAI00/ai-db-imi"
   },
   "engines": {
-    "node": ">=16"
+    "bun": ">=1.0.0"
   }
 }

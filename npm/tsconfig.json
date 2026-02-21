@@ -4,13 +4,13 @@
     "module": "commonjs",
     "lib": ["ES2018"],
     "outDir": ".",
-    "rootDir": "src",
+    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "declaration": false,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules"]
+  "files": ["run.ts"],
+  "exclude": ["node_modules", "run.js"]
 }

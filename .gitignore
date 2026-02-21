@@ -4,3 +4,4 @@
 *.db-wal
 target/
 npm/node_modules/
+npm/run.js

@@ -237,6 +237,16 @@ enum Commands {
         #[command(subcommand)]
         action: Option<MemoryAction>,
     },
+    #[command(about = "Add a human-verified lesson about prior agent mistakes")]
+    Lesson {
+        args: Vec<String>,
+        #[arg(long)]
+        correct_behavior: Option<String>,
+        #[arg(long)]
+        verified_by: Option<String>,
+    },
+    #[command(about = "List human-verified lessons")]
+    Lessons,
     #[command(alias = "d", about = "Record an architectural or design decision")]
     Decide {
         what: String,
@@ -319,6 +329,15 @@ struct MemoryRow {
     value: String,
     typ: String,
     source: String,
+    created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+struct LessonRow {
+    id: String,
+    what_went_wrong: String,
+    correct_behavior: String,
+    verified_by: String,
     created_at: i64,
 }
 
@@ -496,6 +515,12 @@ fn dispatch(conn: &mut Connection, db_path: &Path, out: OutputCtx, command: Comm
             workspace,
         } => cmd_add_task(conn, out, goal_id, title, desc, priority, why, context, relevant_files, tools, acceptance_criteria, workspace),
         Commands::Memory { action } => cmd_memory(conn, out, action),
+        Commands::Lesson {
+            args,
+            correct_behavior,
+            verified_by,
+        } => cmd_lesson(conn, out, args, correct_behavior, verified_by),
+        Commands::Lessons => cmd_lessons(conn, out),
         Commands::Decide { what, why, affects } => cmd_decide(conn, out, what, why, affects),
         Commands::Log { note } => cmd_log(conn, out, note.join(" ")),
         Commands::Delete { id } => cmd_delete(conn, out, id),
@@ -544,6 +569,8 @@ fn command_key(command: &Commands) -> &'static str {
         Commands::AddGoal { .. } => "add-goal",
         Commands::AddTask { .. } => "add-task",
         Commands::Memory { .. } => "memory",
+        Commands::Lesson { .. } => "lesson",
+        Commands::Lessons => "lessons",
         Commands::Decide { .. } => "decide",
         Commands::Log { .. } => "log",
         Commands::Delete { .. } => "delete",
@@ -1004,6 +1031,7 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
     };
     let active_goals = query_active_goals(conn, 10)?;
     let wip = query_wip_tasks(conn, 10)?;
+    let lessons = query_lessons(conn, 15)?;
     let memories = query_active_memories(conn, 15)?;
 
     if out.is_json() {
@@ -1025,6 +1053,7 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
             .collect();
         let goals_json: Vec<Value> = active_goals.iter().map(goal_to_value).collect();
         let wip_json: Vec<Value> = wip.iter().map(wip_task_to_value).collect();
+        let lessons_json: Vec<Value> = lessons.iter().map(lesson_to_value).collect();
         let memories_json: Vec<Value> = memories.iter().map(memory_to_value).collect();
         println!(
             "{}",
@@ -1035,6 +1064,7 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
                 "decisions": decisions_json,
                 "goals": goals_json,
                 "wip": wip_json,
+                "verified_lessons": lessons_json,
                 "memories": memories_json
             })
         );
@@ -1098,6 +1128,21 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
                 .collect(),
         );
         t.section(
+            "verified_lessons",
+            &["what_went_wrong", "correct_behavior", "verified_by", "created_at"],
+            lessons
+                .iter()
+                .map(|l| {
+                    vec![
+                        l.what_went_wrong.clone(),
+                        l.correct_behavior.clone(),
+                        l.verified_by.clone(),
+                        l.created_at.to_string(),
+                    ]
+                })
+                .collect(),
+        );
+        t.section(
             "memories",
             &["key", "value", "type", "source"],
             memories
@@ -1147,6 +1192,19 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
     } else {
         for d in &decisions {
             println!("  {}\n    why: {}\n    affects: {}\n    {} ago", d.0, d.1, d.2, ago(d.3));
+        }
+    }
+
+    if !lessons.is_empty() {
+        println!("\n## Verified Lessons");
+        for l in &lessons {
+            println!(
+                "  - {}\n    correct behavior: {}\n    verified by: {} ({} ago)",
+                l.what_went_wrong,
+                l.correct_behavior,
+                l.verified_by,
+                ago(l.created_at)
+            );
         }
     }
 
@@ -1366,6 +1424,7 @@ fn cmd_next(
             };
             let decisions = query_decisions(conn, 10)?;
             let direction = query_direction(conn, Some(now_ts() - 7 * 24 * 3600), 8)?;
+            let lessons = query_lessons(conn, 15)?;
             let memories = if let Some(gid) = &task.goal_id {
                 query_memories(conn, Some(gid), 15)?
             } else {
@@ -1452,12 +1511,14 @@ fn cmd_next(
                     .iter()
                     .map(|d| json!({"content": d.0, "author": d.1, "created_at": d.2}))
                     .collect();
+                let lessons_json: Vec<Value> = lessons.iter().map(lesson_to_value).collect();
                 let memories_json: Vec<Value> = memories.iter().map(memory_to_value).collect();
                 println!(
                     "{}",
                     json!({
                         "ok": true,
                         "released_stale": released,
+                        "verified_lessons": lessons_json,
                         "task": {
                             "id": task.id,
                             "title": task.title,
@@ -1485,6 +1546,21 @@ fn cmd_next(
 
             if out.is_toon() {
                 let mut t = ToonBuilder::new();
+                t.section(
+                    "verified_lessons",
+                    &["what_went_wrong", "correct_behavior", "verified_by", "created_at"],
+                    lessons
+                        .iter()
+                        .map(|l| {
+                            vec![
+                                l.what_went_wrong.clone(),
+                                l.correct_behavior.clone(),
+                                l.verified_by.clone(),
+                                l.created_at.to_string(),
+                            ]
+                        })
+                        .collect(),
+                );
                 t.section(
                     "task",
                     &["id", "title", "why"],
@@ -1564,6 +1640,19 @@ fn cmd_next(
 
             if released > 0 {
                 println!("⚠ Released {released} stale in-progress task(s)");
+            }
+            if !lessons.is_empty() {
+                println!("## Verified Lessons");
+                for l in &lessons {
+                    println!(
+                        "  - {}\n    correct behavior: {}\n    verified by: {} ({} ago)",
+                        l.what_went_wrong,
+                        l.correct_behavior,
+                        l.verified_by,
+                        ago(l.created_at)
+                    );
+                }
+                println!();
             }
             println!("🔒 Task claimed and locked to this agent");
             println!("ID: {}  {}", task.id, task.title);
@@ -2621,6 +2710,91 @@ fn cmd_memory(conn: &Connection, out: OutputCtx, action: Option<MemoryAction>) -
     }
 }
 
+fn cmd_lesson(
+    conn: &Connection,
+    out: OutputCtx,
+    mut args: Vec<String>,
+    correct_behavior: Option<String>,
+    verified_by: Option<String>,
+) -> Result<(), String> {
+    if args.first().map(|s| s.eq_ignore_ascii_case("add")).unwrap_or(false) {
+        let _ = args.remove(0);
+    }
+    let what_went_wrong = args.join(" ").trim().to_string();
+    if what_went_wrong.is_empty() {
+        return Err("lesson text is required".to_string());
+    }
+
+    let correct_behavior = match correct_behavior {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => {
+            let v = ops_read_line("Correct behavior: ")?;
+            if v.trim().is_empty() {
+                return Err("correct behavior is required".to_string());
+            }
+            v
+        }
+    };
+    let verified_by = verified_by
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "human".to_string());
+
+    conn.execute(
+        "INSERT INTO lessons (id, what_went_wrong, correct_behavior, verified_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![gen_id(), what_went_wrong, correct_behavior, verified_by, now_ts()],
+    )
+    .map_err(|e| e.to_string())?;
+
+    emit_simple_ok(out, "Lesson added")
+}
+
+fn cmd_lessons(conn: &Connection, out: OutputCtx) -> Result<(), String> {
+    let lessons = query_lessons(conn, 200)?;
+    if out.is_json() {
+        println!(
+            "{}",
+            json!(lessons
+                .iter()
+                .map(lesson_to_value)
+                .collect::<Vec<_>>())
+        );
+    } else if out.is_toon() {
+        let mut t = ToonBuilder::new();
+        t.section(
+            "verified_lessons",
+            &["id", "what_went_wrong", "correct_behavior", "verified_by", "created_at"],
+            lessons
+                .iter()
+                .map(|l| {
+                    vec![
+                        l.id.clone(),
+                        l.what_went_wrong.clone(),
+                        l.correct_behavior.clone(),
+                        l.verified_by.clone(),
+                        l.created_at.to_string(),
+                    ]
+                })
+                .collect(),
+        );
+        print!("{}", t.finish());
+    } else if lessons.is_empty() {
+        println!("No lessons.");
+    } else {
+        for l in lessons {
+            println!(
+                "- {}\n  correct behavior: {}\n  verified by: {} ({} ago)\n",
+                l.what_went_wrong,
+                l.correct_behavior,
+                l.verified_by,
+                ago(l.created_at)
+            );
+        }
+    }
+    Ok(())
+}
+
 fn cmd_decide(
     conn: &Connection,
     out: OutputCtx,
@@ -3082,6 +3256,13 @@ CREATE TABLE IF NOT EXISTS memories (
   type TEXT NOT NULL DEFAULT 'learning', reasoning TEXT,
   source TEXT NOT NULL DEFAULT 'agent', created_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS lessons (
+  id TEXT PRIMARY KEY,
+  what_went_wrong TEXT NOT NULL,
+  correct_behavior TEXT NOT NULL,
+  verified_by TEXT NOT NULL DEFAULT 'human',
+  created_at DATETIME
+);
 CREATE TABLE IF NOT EXISTS decisions (
   id TEXT PRIMARY KEY, what TEXT NOT NULL, why TEXT NOT NULL,
   affects TEXT, created_at INTEGER
@@ -3105,6 +3286,7 @@ CREATE INDEX IF NOT EXISTS tasks_goal_id_idx ON tasks(goal_id);
 CREATE INDEX IF NOT EXISTS goals_status_idx ON goals(status);
 CREATE INDEX IF NOT EXISTS memories_goal_id_idx ON memories(goal_id);
 CREATE INDEX IF NOT EXISTS memories_created_at_idx ON memories(created_at);
+CREATE INDEX IF NOT EXISTS lessons_created_at_idx ON lessons(created_at);
 CREATE INDEX IF NOT EXISTS decisions_created_at_idx ON decisions(created_at);",
     )
     .map_err(|e| e.to_string())?;
@@ -3428,6 +3610,31 @@ fn query_memories(conn: &Connection, goal_id: Option<&str>, limit: i64) -> Resul
             .map_err(|e| e.to_string())?;
         Ok(rows)
     }
+}
+
+fn query_lessons(conn: &Connection, limit: i64) -> Result<Vec<LessonRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, COALESCE(what_went_wrong,''), COALESCE(correct_behavior,''), COALESCE(verified_by,'human'), COALESCE(created_at,0)
+             FROM lessons
+             ORDER BY COALESCE(created_at,0) DESC
+             LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let mapped = stmt
+        .query_map(params![limit], |r| {
+            Ok(LessonRow {
+                id: r.get(0)?,
+                what_went_wrong: r.get(1)?,
+                correct_behavior: r.get(2)?,
+                verified_by: r.get(3)?,
+                created_at: r.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    mapped
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 // Memories scoped to non-done goals, with WIP-goal memories surfaced first.
@@ -3804,6 +4011,16 @@ fn memory_to_value(m: &MemoryRow) -> Value {
         "type": m.typ,
         "source": m.source,
         "created_at": m.created_at
+    })
+}
+
+fn lesson_to_value(l: &LessonRow) -> Value {
+    json!({
+        "id": l.id,
+        "what_went_wrong": l.what_went_wrong,
+        "correct_behavior": l.correct_behavior,
+        "verified_by": l.verified_by,
+        "created_at": l.created_at
     })
 }
 

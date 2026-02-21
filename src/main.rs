@@ -270,6 +270,8 @@ enum Commands {
     Audit,
     #[command(about = "LLM reasoning pass — surfaces what doesn't make sense, what to kill, what's next")]
     Think,
+    #[command(about = "Conversationally capture goals, decisions, and direction")]
+    Ops,
 }
 
 #[derive(Subcommand, Debug)]
@@ -503,6 +505,7 @@ fn dispatch(conn: &mut Connection, db_path: &Path, out: OutputCtx, command: Comm
         Commands::Verify { task_id } => cmd_verify(conn, out, task_id),
         Commands::Audit => cmd_audit(conn, out),
         Commands::Think => cmd_think(conn, out),
+        Commands::Ops => cmd_ops(conn, out),
     }
 }
 
@@ -550,6 +553,7 @@ fn command_key(command: &Commands) -> &'static str {
         Commands::Verify { .. } => "verify",
         Commands::Audit => "audit",
         Commands::Think => "think",
+        Commands::Ops => "ops",
     }
 }
 
@@ -724,11 +728,13 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
         "{}",
         paint(out, "1", &format!("IMI State Engine  v{}", VERSION))
     );
+    println!("## IMI State");
     println!("DB: {}", db_path.display());
     println!();
+    println!("## Summary");
     println!("  Goals       {}", goals_count);
     println!(
-        "  Tasks       {}  {}{} done  {}{} wip  {}{} review  {}{} todo",
+        "  Tasks       {}  {}{} done  {}{} in progress  {}{} review  {}{} todo",
         tasks_count,
         status_icon(out, "done"),
         done_count,
@@ -741,6 +747,7 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
     );
     println!("  Memories    {}", memories_count);
     println!();
+    println!("## Active goals");
 
     let all_goals = get_goals(conn)?;
     let done_goals_ct = all_goals.iter().filter(|g| g.status == "done").count();
@@ -782,7 +789,7 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
     }
     if done_goals_ct > 0 {
         println!(
-            "  ✓ {} completed goal{}  (imi goals to list)",
+            "## Completed goals\n  ✓ {} completed goal{}  (run `imi goals` to list)",
             done_goals_ct,
             if done_goals_ct == 1 { "" } else { "s" }
         );
@@ -959,11 +966,55 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
 
     let direction = query_direction(conn, Some(week_ago), 10)?;
     let decisions = query_decisions(conn, 15)?;
+    let founding_intent: Vec<(String, String, i64)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT content, COALESCE(author,''), COALESCE(created_at,0)
+                 FROM direction_notes
+                 ORDER BY COALESCE(created_at,0) ASC
+                 LIMIT 2",
+            )
+            .map_err(|e| e.to_string())?;
+        let mapped = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| e.to_string())?;
+        mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
+    let killed_decisions: Vec<(String, String, String, i64)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT what, why, COALESCE(affects,''), COALESCE(created_at,0)
+                 FROM decisions
+                 WHERE LOWER(COALESCE(what,'')) LIKE '%killed%'
+                    OR LOWER(COALESCE(what,'')) LIKE '%not%'
+                    OR LOWER(COALESCE(why,'')) LIKE '%instead%'
+                    OR LOWER(COALESCE(why,'')) LIKE '%rejected%'
+                 ORDER BY COALESCE(created_at,0) DESC
+                 LIMIT 5",
+            )
+            .map_err(|e| e.to_string())?;
+        let mapped = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map_err(|e| e.to_string())?;
+        mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
     let active_goals = query_active_goals(conn, 10)?;
     let wip = query_wip_tasks(conn, 10)?;
     let memories = query_active_memories(conn, 15)?;
 
     if out.is_json() {
+        let founding_intent_json: Vec<Value> = founding_intent
+            .iter()
+            .map(|d| json!({"content": d.0, "author": d.1, "created_at": d.2}))
+            .collect();
+        let killed_decisions_json: Vec<Value> = killed_decisions
+            .iter()
+            .map(|d| json!({"what": d.0, "why": d.1, "affects": d.2, "created_at": d.3}))
+            .collect();
         let direction_json: Vec<Value> = direction
             .iter()
             .map(|d| json!({"content": d.0, "author": d.1, "created_at": d.2}))
@@ -978,6 +1029,8 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
         println!(
             "{}",
             json!({
+                "product_vision": founding_intent_json,
+                "killed_decisions": killed_decisions_json,
                 "direction": direction_json,
                 "decisions": decisions_json,
                 "goals": goals_json,
@@ -990,6 +1043,22 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
 
     if out.is_toon() {
         let mut t = ToonBuilder::new();
+        t.section(
+            "product_vision",
+            &["founding_intent", "author", "created_at"],
+            founding_intent
+                .iter()
+                .map(|d| vec![d.0.clone(), d.1.clone(), d.2.to_string()])
+                .collect(),
+        );
+        t.section(
+            "what_was_killed_and_why",
+            &["what", "why", "affects", "created_at"],
+            killed_decisions
+                .iter()
+                .map(|d| vec![d.0.clone(), d.1.clone(), d.2.clone(), d.3.to_string()])
+                .collect(),
+        );
         t.section(
             "direction",
             &["content", "author", "created_at"],
@@ -1040,9 +1109,29 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
         return Ok(());
     }
 
-    println!("IMI Context  what matters right now\n");
+    println!("## IMI Context");
+    println!("What matters right now:\n");
 
-    println!("Direction notes (last 7 days)");
+    println!("## Product Vision");
+    if founding_intent.is_empty() {
+        println!("  Founding intent: (none)");
+    } else {
+        for d in &founding_intent {
+            let author = if d.1.is_empty() { "unknown" } else { &d.1 };
+            println!("  Founding intent: {}\n    {} ago  @{}", d.0, ago(d.2), author);
+        }
+    }
+
+    println!("\n## What was killed and why");
+    if killed_decisions.is_empty() {
+        println!("  (none)");
+    } else {
+        for d in &killed_decisions {
+            println!("  {}\n    why: {}\n    affects: {}\n    {} ago", d.0, d.1, d.2, ago(d.3));
+        }
+    }
+
+    println!("\n## Direction notes (last 7 days)");
     if direction.is_empty() {
         println!("  (none)");
     } else {
@@ -1052,7 +1141,7 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
         }
     }
 
-    println!("\nDecisions");
+    println!("\n## Decisions");
     if decisions.is_empty() {
         println!("  (none)");
     } else {
@@ -1061,7 +1150,7 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
         }
     }
 
-    println!("\nActive Goals");
+    println!("\n## Active goals");
     if active_goals.is_empty() {
         println!("  (none)");
     } else {
@@ -1079,7 +1168,7 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
         }
     }
 
-    println!("\nIn Progress");
+    println!("\n## In progress");
     if wip.is_empty() {
         println!("  (nothing in progress)");
     } else {
@@ -1160,6 +1249,7 @@ fn cmd_context_goal(conn: &Connection, out: OutputCtx, goal_prefix: String) -> R
         return Ok(());
     }
 
+    println!("## Goal");
     println!("{} {}  {}", status_icon(out, &goal.status), goal.name, goal.id);
     if !goal.why_.is_empty() {
         println!("why: {}", goal.why_);
@@ -1171,7 +1261,7 @@ fn cmd_context_goal(conn: &Connection, out: OutputCtx, goal_prefix: String) -> R
         println!("success: {}", goal.success_signal);
     }
 
-    println!("\nTasks");
+    println!("\n## Tasks");
     if tasks.is_empty() {
         println!("  (none)");
     } else {
@@ -1186,7 +1276,7 @@ fn cmd_context_goal(conn: &Connection, out: OutputCtx, goal_prefix: String) -> R
         }
     }
 
-    println!("\nMemories");
+    println!("\n## Memories");
     if memories.is_empty() {
         println!("  (none)");
     } else {
@@ -1228,7 +1318,7 @@ fn cmd_next(
                 if released > 0 {
                     println!("⚠ Released {released} stale in-progress task(s)");
                 }
-                println!("No available tasks (all done or already claimed).");
+                println!("No available tasks to claim (all tasks are done or already locked).");
             }
             Ok(())
         }
@@ -1243,7 +1333,7 @@ fn cmd_next(
                 if released > 0 {
                     println!("⚠ Released {released} stale in-progress task(s)");
                 }
-                println!("Race lost while claiming next task, please retry.");
+                println!("Another agent claimed the task first; retry `imi next`.");
             }
             Ok(())
         }
@@ -1252,6 +1342,28 @@ fn cmd_next(
                 .goal_id
                 .as_ref()
                 .and_then(|gid| get_goal(conn, gid).ok().flatten());
+            let goal_reasoning_decisions: Vec<(String, String, String, i64)> = if let Some(g) = goal.as_ref()
+            {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT what, why, COALESCE(affects,''), COALESCE(created_at,0)
+                         FROM decisions
+                         WHERE LOWER(COALESCE(affects,'')) LIKE LOWER(?1)
+                         ORDER BY COALESCE(created_at,0) DESC
+                         LIMIT 2",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mapped = stmt
+                    .query_map(params![format!("%{}%", g.name)], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                    })
+                    .map_err(|e| e.to_string())?;
+                mapped
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?
+            } else {
+                vec![]
+            };
             let decisions = query_decisions(conn, 10)?;
             let direction = query_direction(conn, Some(now_ts() - 7 * 24 * 3600), 8)?;
             let memories = if let Some(gid) = &task.goal_id {
@@ -1278,6 +1390,59 @@ fn cmd_next(
             };
 
             if out.is_json() {
+                let relevant_files: Vec<String> = serde_json::from_str(&task.relevant_files).unwrap_or_default();
+                let tools: Vec<String> = serde_json::from_str(&task.tools).unwrap_or_default();
+                let goal_name = goal.as_ref().map(|g| g.name.clone()).unwrap_or_default();
+                let prior_work_on_goal: Vec<Value> = if let Some(gid) = &task.goal_id {
+                    let mut stmt = conn
+                        .prepare(
+                            "SELECT COALESCE(m.task_id,''), COALESCE(t.title,''), COALESCE(m.value,''), COALESCE(m.created_at,0)
+                             FROM memories m
+                             JOIN tasks t ON t.id = m.task_id
+                             WHERE t.goal_id=?1 AND m.key='completion_summary' AND COALESCE(m.task_id,'') != ?2
+                             ORDER BY COALESCE(m.created_at,0) DESC
+                             LIMIT 3",
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let rows: Vec<(String, String, String, i64)> = stmt
+                        .query_map(params![gid, task.id.clone()], |r| {
+                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                        })
+                        .map_err(|e| e.to_string())?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| e.to_string())?;
+                    rows.into_iter()
+                        .map(|(task_id, title, summary, created_at)| {
+                            json!({"task_id": task_id, "title": title, "completion_summary": summary, "created_at": created_at})
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let decisions_affecting_goal: Vec<Value> = if goal_name.is_empty() {
+                    Vec::new()
+                } else {
+                    let mut stmt = conn
+                        .prepare(
+                            "SELECT COALESCE(what,''), COALESCE(why,''), COALESCE(affects,''), COALESCE(created_at,0)
+                             FROM decisions
+                             WHERE COALESCE(affects,'') LIKE ?1
+                             ORDER BY COALESCE(created_at,0) DESC
+                             LIMIT 3",
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let pattern = format!("%{}%", goal_name);
+                    let rows: Vec<(String, String, String, i64)> = stmt
+                        .query_map(params![pattern], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                        .map_err(|e| e.to_string())?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| e.to_string())?;
+                    rows.into_iter()
+                        .map(|(what, why, affects, created_at)| {
+                            json!({"what": what, "why": why, "affects": affects, "created_at": created_at})
+                        })
+                        .collect()
+                };
                 let goal_json = goal.as_ref().map(goal_to_value);
                 let decisions_json: Vec<Value> = decisions
                     .iter()
@@ -1299,12 +1464,16 @@ fn cmd_next(
                             "why": task.why_,
                             "description": task.description,
                             "context": task.context,
-                            "relevant_files": task.relevant_files,
-                            "tools": task.tools,
+                            "relevant_files": relevant_files,
+                            "tools": tools,
                             "acceptance_criteria": task.acceptance_criteria,
                             "workspace_path": task.workspace_path
                         },
                         "goal": goal_json,
+                        "goal_description": goal.as_ref().map(|g| g.description.clone()).unwrap_or_default(),
+                        "goal_why": goal.as_ref().map(|g| g.why_.clone()).unwrap_or_default(),
+                        "prior_work_on_goal": prior_work_on_goal,
+                        "decisions_affecting_goal": decisions_affecting_goal,
                         "decisions": decisions_json,
                         "direction": direction_json,
                         "last_failure": last_failure,
@@ -1337,6 +1506,24 @@ fn cmd_next(
                 if !task.workspace_path.is_empty() {
                     t.section("workspace", &["path"], vec![vec![task.workspace_path.clone()]]);
                 }
+                let mut why_this_matters = String::from("## Why this matters\n");
+                if let Some(g) = goal.as_ref() {
+                    if !g.why_.is_empty() {
+                        why_this_matters.push_str(&format!("- Goal why: {}\n", g.why_));
+                    }
+                    if !g.description.is_empty() {
+                        why_this_matters.push_str(&format!("- Goal description: {}\n", g.description));
+                    }
+                }
+                if goal_reasoning_decisions.is_empty() {
+                    why_this_matters.push_str("- Related decisions: none\n");
+                } else {
+                    why_this_matters.push_str("- Related decisions:\n");
+                    for d in &goal_reasoning_decisions {
+                        why_this_matters.push_str(&format!("  - {} (why: {})\n", d.0, d.1));
+                    }
+                }
+                t.section("why_this_matters", &["text"], vec![vec![why_this_matters]]);
                 if let Some(g) = goal {
                     t.section(
                         "goal",
@@ -1378,26 +1565,28 @@ fn cmd_next(
             if released > 0 {
                 println!("⚠ Released {released} stale in-progress task(s)");
             }
-            println!("Claimed: {}  {}", task.id, task.title);
+            println!("🔒 Task claimed and locked to this agent");
+            println!("ID: {}  {}", task.id, task.title);
+            println!("First step: read this task's why/description, then begin implementation.");
             if !task.why_.is_empty() {
-                println!("why: {}", task.why_);
+                println!("Why: {}", task.why_);
             }
             if !task.description.is_empty() {
                 println!("\n{}", task.description);
             }
             if !task.context.is_empty() {
-                println!("\ncontext: {}", task.context);
+                println!("\nContext: {}", task.context);
             }
             if let Some(g) = goal {
                 println!("\nGoal: {}", g.name);
                 if !g.why_.is_empty() {
-                    println!("  why: {}", g.why_);
+                    println!("  Why: {}", g.why_);
                 }
                 if !g.for_who.is_empty() {
-                    println!("  for who: {}", g.for_who);
+                    println!("  For who: {}", g.for_who);
                 }
                 if !g.success_signal.is_empty() {
-                    println!("  success: {}", g.success_signal);
+                    println!("  Success: {}", g.success_signal);
                 }
             }
             if let Some(failure) = last_failure {
@@ -1412,7 +1601,7 @@ fn cmd_start(conn: &Connection, out: OutputCtx, agent: Option<String>, task_id: 
     let agent_id = current_agent(agent.as_deref());
     let task = ensure_task_in_progress(conn, &task_id, &agent_id)?;
 
-    emit_simple_ok(out, &format!("Started task {}", task.id))?;
+    emit_simple_ok(out, &format!("Task {id} is now in progress and locked to this agent", id = task.id))?;
     Ok(())
 }
 
@@ -1607,7 +1796,7 @@ fn cmd_complete(
         sync_goal(conn, &goal_id)?;
     }
 
-    emit_simple_ok(out, "Task completed")?;
+    emit_simple_ok(out, "✅ Task marked done and completion summary saved")?;
     Ok(())
 }
 
@@ -1619,12 +1808,12 @@ fn cmd_run(
     model: Option<String>,
 ) -> Result<(), String> {
     let id = resolve_id_prefix(conn, "tasks", &task_id)?
-        .ok_or_else(|| format!("task not found: {task_id}"))?;
+        .ok_or_else(|| format!("No task with ID '{task_id}' — run `imi tasks` to list available tasks"))?;
     let agent_id = current_agent(None);
     let claimed = ensure_task_in_progress(conn, &id, &agent_id)?;
-    let task: (String, String, String, String, String, String, String) = conn
+    let task: (String, String, String, String, String, String, String, String) = conn
         .query_row(
-            "SELECT id, title, COALESCE(description,''), COALESCE(acceptance_criteria,''), COALESCE(relevant_files,'[]'), COALESCE(tools,'[]'), COALESCE(workspace_path,'')
+            "SELECT id, title, COALESCE(description,''), COALESCE(acceptance_criteria,''), COALESCE(relevant_files,'[]'), COALESCE(tools,'[]'), COALESCE(workspace_path,''), COALESCE(goal_id,'')
              FROM tasks WHERE id=?1",
             params![id],
             |r| {
@@ -1636,6 +1825,7 @@ fn cmd_run(
                     r.get(4)?,
                     r.get(5)?,
                     r.get(6)?,
+                    r.get(7)?,
                 ))
             },
         )
@@ -1661,6 +1851,78 @@ fn cmd_run(
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let goal = if task.7.is_empty() {
+        None
+    } else {
+        conn.query_row(
+            "SELECT COALESCE(name,''), COALESCE(description,''), COALESCE(why,'') FROM goals WHERE id=?1",
+            params![task.7.clone()],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+    };
+    let (goal_name, goal_description, goal_why) = goal.unwrap_or_else(|| ("".to_string(), "".to_string(), "".to_string()));
+    let prior_work_rows: Vec<(String, String, String, i64)> = if task.7.is_empty() {
+        Vec::new()
+    } else {
+        let mut stmt = conn
+            .prepare(
+                "SELECT COALESCE(m.task_id,''), COALESCE(t.title,''), COALESCE(m.value,''), COALESCE(m.created_at,0)
+                 FROM memories m
+                 JOIN tasks t ON t.id = m.task_id
+                 WHERE t.goal_id=?1 AND m.key='completion_summary' AND COALESCE(m.task_id,'') != ?2
+                 ORDER BY COALESCE(m.created_at,0) DESC
+                 LIMIT 3",
+            )
+            .map_err(|e| e.to_string())?;
+        let mapped = stmt.query_map(params![task.7.clone(), task.0.clone()], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        });
+        let rows = mapped
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    let prior_work_text = if prior_work_rows.is_empty() {
+        "- (none)".to_string()
+    } else {
+        prior_work_rows
+            .iter()
+            .map(|(task_id, title, summary, _)| format!("- **{title}** ({task_id}): {summary}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let goal_decisions_rows: Vec<(String, String, String)> = if goal_name.is_empty() {
+        Vec::new()
+    } else {
+        let mut stmt = conn
+            .prepare(
+                "SELECT COALESCE(what,''), COALESCE(why,''), COALESCE(affects,'')
+                 FROM decisions
+                 WHERE COALESCE(affects,'') LIKE ?1
+                 ORDER BY COALESCE(created_at,0) DESC
+                 LIMIT 3",
+            )
+            .map_err(|e| e.to_string())?;
+        let pat = format!("%{}%", goal_name);
+        let mapped = stmt.query_map(params![pat], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)));
+        let rows = mapped
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    let goal_decisions_text = if goal_decisions_rows.is_empty() {
+        "- (none)".to_string()
+    } else {
+        goal_decisions_rows
+            .iter()
+            .map(|(what, why, affects)| format!("- **{what}** — {why} (affects: {affects})"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
 
     let imi_dir = db_path
         .parent()
@@ -1669,12 +1931,16 @@ fn cmd_run(
     fs::create_dir_all(&run_dir).map_err(|e| format!("failed to create run dir: {e}"))?;
 
     let context_md = format!(
-        "# Task: {title}\n\n## Description\n{description}\n\n## Acceptance Criteria\n{acceptance}\n\n## Relevant Files\n{relevant}\n\n## Tools\n{tools}\n\n## Workspace Path\n{workspace}\n",
+        "# Task: {title}\n\n## Description\n{description}\n\n## Acceptance Criteria\n{acceptance}\n\n## Relevant Files\n{relevant}\n\n## Tools\n{tools}\n\n## Goal description\n{goal_description}\n\n## Goal why\n{goal_why}\n\n## Prior work on this goal\n{prior_work}\n\n## Decisions affecting this goal\n{goal_decisions}\n\n## Workspace Path\n{workspace}\n",
         title = task.1,
         description = if task.2.is_empty() { "(none)" } else { &task.2 },
         acceptance = if task.3.is_empty() { "(none)" } else { &task.3 },
         relevant = relevant_files_text,
         tools = tools_text,
+        goal_description = if goal_description.is_empty() { "(none)" } else { &goal_description },
+        goal_why = if goal_why.is_empty() { "(none)" } else { &goal_why },
+        prior_work = prior_work_text,
+        goal_decisions = goal_decisions_text,
         workspace = if task.6.is_empty() { "(none)" } else { &task.6 },
     );
     fs::write(run_dir.join("context.md"), context_md)
@@ -1683,6 +1949,7 @@ fn cmd_run(
     let selected_model = model.unwrap_or_else(|| "claude-sonnet-4-5".to_string());
     let hank_json = json!({
         "globalSystemPromptFile": "../../prompts/execute-mode.md",
+        "context": fs::read_to_string(run_dir.join("context.md")).map_err(|e| format!("failed to read context.md: {e}"))?,
         "codons": [
             {
                 "model": selected_model,
@@ -2074,7 +2341,7 @@ fn cmd_fail(
         );
         print!("{}", t.finish());
     } else {
-        println!("Task reset to todo: {}", task.id);
+        println!("🚫 Task {} marked blocked for this attempt and moved back to 📋 todo", task.id);
     }
 
     Ok(())
@@ -2082,7 +2349,7 @@ fn cmd_fail(
 
 fn cmd_ping(conn: &Connection, out: OutputCtx, task_id: String) -> Result<(), String> {
     let id = resolve_id_prefix(conn, "tasks", &task_id)?
-        .ok_or_else(|| format!("task not found: {task_id}"))?;
+        .ok_or_else(|| format!("No task with ID '{task_id}' — run `imi tasks` to list available tasks"))?;
     let now = now_ts();
     let n = conn
         .execute(
@@ -2352,6 +2619,169 @@ fn cmd_log(conn: &Connection, out: OutputCtx, note: String) -> Result<(), String
     )
     .map_err(|e| e.to_string())?;
     emit_simple_ok(out, "Direction note added")
+}
+
+fn cmd_ops(conn: &Connection, out: OutputCtx) -> Result<(), String> {
+    println!("What are you building, why, and what changed?");
+    println!("(Press Enter twice to submit, or Ctrl+D)");
+
+    let mut input = String::new();
+    let mut consecutive_blank = 0usize;
+    loop {
+        let mut line = String::new();
+        let bytes = io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+        if bytes == 0 {
+            break;
+        }
+        let trimmed = line.trim_end();
+        if trimmed.trim().is_empty() {
+            consecutive_blank += 1;
+            if consecutive_blank >= 2 {
+                break;
+            }
+        } else {
+            consecutive_blank = 0;
+            input.push_str(trimmed);
+            input.push('\n');
+        }
+    }
+
+    let text = input.trim();
+    if text.is_empty() {
+        return Err("No input received".to_string());
+    }
+
+    let mut goals: Vec<String> = Vec::new();
+    let mut decisions: Vec<(String, String)> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let lower = line.to_lowercase();
+
+        let goal_markers = ["we want to build", "we're building", "the goal is"];
+        if goal_markers.iter().any(|m| lower.contains(m)) {
+            let mut goal_name = line.to_string();
+            for marker in goal_markers {
+                if let Some(idx) = lower.find(marker) {
+                    let start = idx + marker.len();
+                    let candidate = line[start..].trim();
+                    if !candidate.is_empty() {
+                        goal_name = candidate
+                            .trim_start_matches(':')
+                            .trim_start_matches('-')
+                            .trim()
+                            .to_string();
+                    }
+                    break;
+                }
+            }
+            goals.push(goal_name);
+        }
+
+        let decision_markers = ["we decided", "we're going with", "instead of"];
+        if decision_markers.iter().any(|m| lower.contains(m)) {
+            let (what, why) = if let Some(pos) = lower.find("instead of") {
+                (
+                    line[..pos].trim().trim_end_matches(',').to_string(),
+                    format!("Instead of {}", line[pos + "instead of".len()..].trim()),
+                )
+            } else if let Some(pos) = lower.find("because") {
+                (
+                    line[..pos].trim().trim_end_matches(',').to_string(),
+                    line[pos + "because".len()..].trim().to_string(),
+                )
+            } else {
+                (line.to_string(), "Captured from imi ops conversation".to_string())
+            };
+            if !what.is_empty() {
+                decisions.push((what, why));
+            }
+        }
+
+        let note_markers = [
+            "because",
+            "the reason",
+            "assuming",
+            "context:",
+            "changed",
+            "new direction",
+            "update:",
+        ];
+        if note_markers.iter().any(|m| lower.contains(m)) {
+            notes.push(line.to_string());
+        }
+    }
+
+    println!("\nExtracted intent:");
+    if goals.is_empty() {
+        println!("- Goals: none detected");
+    } else {
+        println!("- Goals:");
+        for g in &goals {
+            println!("  - {g}");
+        }
+    }
+    if decisions.is_empty() {
+        println!("- Decisions: none detected");
+    } else {
+        println!("- Decisions:");
+        for (what, why) in &decisions {
+            println!("  - {what} (why: {why})");
+        }
+    }
+    if notes.is_empty() {
+        println!("- Direction notes: none detected");
+    } else {
+        println!("- Direction notes:");
+        for n in &notes {
+            println!("  - {n}");
+        }
+    }
+
+    print!("\nPersist this to IMI? [y/N]: ");
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut confirm = String::new();
+    io::stdin().read_line(&mut confirm).map_err(|e| e.to_string())?;
+    let confirmed = matches!(confirm.trim().to_lowercase().as_str(), "y" | "yes");
+    if !confirmed {
+        println!("Canceled.");
+        return Ok(());
+    }
+
+    let why = notes.first().cloned();
+    let context = if notes.is_empty() { None } else { Some(notes.join(" | ")) };
+    for goal in goals {
+        cmd_add_goal(
+            conn,
+            out,
+            goal.clone(),
+            Some(goal),
+            Some("medium".to_string()),
+            why.clone(),
+            None,
+            None,
+            vec![],
+            context.clone(),
+            None,
+        )?;
+    }
+    for (what, why) in decisions {
+        cmd_decide(conn, out, what, why, None)?;
+    }
+    for note in notes {
+        cmd_log(conn, out, note)?;
+    }
+
+    if out.is_json() {
+        println!("{}", json!({"ok": true}));
+    } else {
+        println!("Structured intent saved.");
+    }
+    Ok(())
 }
 
 fn cmd_delete(conn: &Connection, out: OutputCtx, id: String) -> Result<(), String> {
@@ -3056,7 +3486,7 @@ fn query_active_memories(conn: &Connection, limit: i64) -> Result<Vec<MemoryRow>
 
 fn resolve_task(conn: &Connection, prefix: &str) -> Result<TaskRow, String> {
     let id = resolve_id_prefix(conn, "tasks", prefix)?
-        .ok_or_else(|| format!("task not found: {prefix}"))?;
+        .ok_or_else(|| format!("No task with ID '{prefix}' — run `imi tasks` to list available tasks"))?;
     conn.query_row(
         "SELECT id, title, COALESCE(description,''), COALESCE(why,''), goal_id, COALESCE(status,'todo'), COALESCE(priority,'medium'), agent_id, COALESCE(created_at,0)
          FROM tasks WHERE id=?1",
@@ -3288,11 +3718,11 @@ fn ago(ts: i64) -> String {
 
 fn status_icon(out: OutputCtx, status: &str) -> String {
     match status {
-        "done" => paint(out, "32", "●"),
-        "in_progress" | "ongoing" => paint(out, "33", "◐"),
-        "review" => paint(out, "35", "◑"),
-        "failed" | "cancelled" => paint(out, "31", "✕"),
-        _ => paint(out, "90", "○"),
+        "done" => paint(out, "32", "✅"),
+        "in_progress" | "ongoing" => paint(out, "33", "🔄"),
+        "review" => paint(out, "35", "🔎"),
+        "blocked" | "failed" | "cancelled" => paint(out, "31", "🚫"),
+        _ => paint(out, "90", "📋"),
     }
 }
 
@@ -3458,7 +3888,7 @@ fn instructions_windsurf() -> &'static str {
 
 fn cmd_verify(conn: &Connection, out: OutputCtx, task_prefix: String) -> Result<(), String> {
     let task_id = resolve_id_prefix(conn, "tasks", &task_prefix)?
-        .ok_or_else(|| format!("task not found: {task_prefix}"))?;
+        .ok_or_else(|| format!("No task with ID '{task_prefix}' — run `imi tasks` to list available tasks"))?;
 
     let (title, status, description, acceptance_criteria, relevant_files, why): (String, String, String, Option<String>, String, String) = conn
         .query_row(
@@ -3638,17 +4068,23 @@ fn cmd_audit(conn: &Connection, out: OutputCtx) -> Result<(), String> {
         return Ok(());
     }
 
-    println!("Audit: done tasks ({} total, {} verified, {} unverified)", rows.len(), verified.len(), unverified.len());
+    println!("## Audit");
+    println!(
+        "Done tasks: {} total, {} verified, {} needing review",
+        rows.len(),
+        verified.len(),
+        unverified.len()
+    );
     println!();
 
     if unverified.is_empty() {
         println!("All done tasks have acceptance criteria and completion summaries.");
     } else {
-        println!("Unverified ({}):", unverified.len());
+        println!("## Needs verification ({})", unverified.len());
         for r in &unverified {
             let flags = format!("{}{}",
-                if !r.has_criteria { " no-criteria" } else { "" },
-                if !r.has_summary { " no-summary" } else { "" },
+                if !r.has_criteria { " missing acceptance criteria" } else { "" },
+                if !r.has_summary { " no completion summary" } else { "" },
             );
             println!("  ⚠  {} [{}]{}", r.title, r.id, flags);
         }
@@ -3656,7 +4092,7 @@ fn cmd_audit(conn: &Connection, out: OutputCtx) -> Result<(), String> {
 
     if !verified.is_empty() {
         println!();
-        println!("Verified ({}):", verified.len());
+        println!("## Verified ({})", verified.len());
         for r in &verified {
             println!("  ✓  {} [{}]", r.title, r.id);
         }

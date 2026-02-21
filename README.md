@@ -44,6 +44,8 @@ imi log "direction note"              # Log a strategic direction note
 imi add-goal "name" "why"             # Create a new goal
 imi add-task <goal_id> "title" "desc" # Add a task to a goal
 imi ping <task_id>                    # Heartbeat — keep a task alive
+imi wrap <task_id> -- <cmd ...>       # Auto start/ping/checkpoint/complete|fail for any command
+imi orchestrate <goal_id> --workers 8 -- <cmd ...>  # Parallel worker loop over todo tasks
 ```
 
 ## The Loop
@@ -52,8 +54,8 @@ imi ping <task_id>                    # Heartbeat — keep a task alive
 1. You define a goal        →  imi add-goal "Ship auth system" "users need to log in"
 2. Agent claims a task      →  imi next --agent claude --toon
 3. Agent executes           →  (Claude Code / Copilot / Cursor does the work)
-4. Agent writes back        →  imi complete <id> "implemented JWT with RS256"
-                               imi memory add <goal> jwt_rotation "rotate every 90d"
+4. Runtime writes back      →  imi wrap <task_id> -- <agent command ...>
+                               (auto checkpoints + complete/fail on exit)
 5. Next agent picks up      →  imi next --toon  ← sees all prior context automatically
 ```
 

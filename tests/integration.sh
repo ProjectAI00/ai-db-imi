@@ -286,6 +286,96 @@ else
 fi
 
 # ═════════════════════════════════════════════════════════════
+# 9B. WRAP (runtime lifecycle automation)
+# ═════════════════════════════════════════════════════════════
+echo ""
+echo "── 9B. Wrap ────────────────────────────────────────────"
+
+run add-task "$GOAL_ID" "Autopilot wrapper success" "Run a command under IMI wrapper"
+WRAP_TASK_ID=$(echo "$CMD_OUT" | grep -oE '[a-z0-9]{14,}' | head -1)
+if [[ -z "$WRAP_TASK_ID" ]]; then
+  db_query "SELECT id FROM tasks ORDER BY rowid DESC LIMIT 1;"
+  WRAP_TASK_ID="$DB_OUT"
+fi
+
+run wrap "$WRAP_TASK_ID" --ping-secs 1 --checkpoint-secs 2 -- bash -lc "sleep 3"
+assert_exit "wrap success exits 0" 0
+
+db_query "SELECT status FROM tasks WHERE id='$WRAP_TASK_ID';"
+if [[ "$DB_OUT" == "done" ]]; then
+  pass "wrap success: task status = done"
+else
+  fail "wrap success: expected done status" "DB said: $DB_OUT"
+fi
+
+db_query "SELECT COUNT(*) FROM memories WHERE task_id='$WRAP_TASK_ID' AND key='checkpoint';"
+if [[ "${DB_OUT:-0}" -ge 1 ]]; then
+  pass "wrap success: checkpoint memory written"
+else
+  fail "wrap success: checkpoint memory missing" "DB said: $DB_OUT"
+fi
+
+run add-task "$GOAL_ID" "Autopilot wrapper failure" "Fail command under wrapper"
+WRAP_FAIL_TASK_ID=$(echo "$CMD_OUT" | grep -oE '[a-z0-9]{14,}' | head -1)
+if [[ -z "$WRAP_FAIL_TASK_ID" ]]; then
+  db_query "SELECT id FROM tasks ORDER BY rowid DESC LIMIT 1;"
+  WRAP_FAIL_TASK_ID="$DB_OUT"
+fi
+
+run wrap "$WRAP_FAIL_TASK_ID" --ping-secs 1 --checkpoint-secs 0 -- bash -lc "exit 7"
+assert_exit "wrap failure exits 1" 1
+
+db_query "SELECT status FROM tasks WHERE id='$WRAP_FAIL_TASK_ID';"
+if [[ "$DB_OUT" == "todo" ]]; then
+  pass "wrap failure: task status reset to todo"
+else
+  fail "wrap failure: expected todo status" "DB said: $DB_OUT"
+fi
+
+db_query "SELECT COUNT(*) FROM memories WHERE task_id='$WRAP_FAIL_TASK_ID' AND key='failure_reason';"
+if [[ "${DB_OUT:-0}" -ge 1 ]]; then
+  pass "wrap failure: failure memory written"
+else
+  fail "wrap failure: failure memory missing" "DB said: $DB_OUT"
+fi
+
+run complete "$WRAP_FAIL_TASK_ID" "wrapped failure path verified"
+assert_exit "wrap failure cleanup complete exits 0" 0
+
+# ═════════════════════════════════════════════════════════════
+# 9C. ORCHESTRATE (parallel worker loop)
+# ═════════════════════════════════════════════════════════════
+echo ""
+echo "── 9C. Orchestrate ─────────────────────────────────────"
+
+run add-goal "Orchestrate goal" "Parallel execution loop"
+ORCH_GOAL_ID=$(echo "$CMD_OUT" | grep -oE '[a-z0-9]{14,}' | head -1)
+if [[ -z "$ORCH_GOAL_ID" ]]; then
+  db_query "SELECT id FROM goals ORDER BY rowid DESC LIMIT 1;"
+  ORCH_GOAL_ID="$DB_OUT"
+fi
+
+run add-task "$ORCH_GOAL_ID" "orchestrate task 1" "parallel worker one"
+run add-task "$ORCH_GOAL_ID" "orchestrate task 2" "parallel worker two"
+
+run orchestrate "$ORCH_GOAL_ID" --workers 2 --max-tasks 2 --agent-prefix bench --ping-secs 1 --checkpoint-secs 1 -- bash -lc "sleep 2"
+assert_exit "orchestrate exits 0" 0
+
+db_query "SELECT COUNT(*) FROM tasks WHERE goal_id='$ORCH_GOAL_ID' AND status='done';"
+if [[ "$DB_OUT" == "2" ]]; then
+  pass "orchestrate: all goal tasks completed"
+else
+  fail "orchestrate: expected 2 done tasks" "DB said: $DB_OUT"
+fi
+
+db_query "SELECT COUNT(*) FROM memories WHERE task_id IN (SELECT id FROM tasks WHERE goal_id='$ORCH_GOAL_ID') AND key='completion_summary';"
+if [[ "${DB_OUT:-0}" -ge 2 ]]; then
+  pass "orchestrate: completion summaries written"
+else
+  fail "orchestrate: completion summaries missing" "DB said: $DB_OUT"
+fi
+
+# ═════════════════════════════════════════════════════════════
 # 10. MEMORY ADD + LIST
 # ═════════════════════════════════════════════════════════════
 echo ""

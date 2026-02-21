@@ -91,17 +91,24 @@ Ask yourself: is this one thing, or is this a project? If it's one thing, don't 
 
 ## Assess Complexity Before You Write Anything
 
-Before creating a single goal or task, figure out what kind of work this actually is. This matters because complexity determines how much depth your specs need — over-specifying a trivial task wastes everyone's time, and under-specifying a complex one causes the agent to guess at every step.
+Before creating a single goal or task, run a quick **Complexity Assessment** and use it to decide how deep the plan should be. Show this score breakdown briefly at the top of your plan output so the human can sanity-check it.
 
-**Simple** means the work touches one or two files, the requirement is clear and unambiguous, there's no coordination needed, and no real decisions to make. A bug fix. A config change. A short script. For these, one well-written task is enough. The description can be 3–4 focused sentences. Don't over-engineer the spec.
+Score each dimension from 1 (low) to 3 (high), then sum (max 12):
 
-**Medium** means the work touches multiple areas of the codebase, there are some unclear requirements that need to be sorted out, it involves a pattern or convention that matters, or you need to read a few files to understand the current state before you can spec it out properly. Adding a new feature. Refactoring a component. Writing a test suite. For these, a goal with 2–4 tasks is right, each description 5–7 sentences, with explicit file lists and clear acceptance criteria.
+- **Scope**: touches 1 file (1) vs 2–3 files (2) vs 4+ files or cross-system (3)
+- **Clarity**: requirements are specific and checkable (1) vs partially unclear (2) vs ambiguous intent (3)
+- **Prior art**: memories exist showing similar work done (1) vs partial prior work (2) vs no prior art (3)
+- **Risk**: isolated change (1) vs touches shared infrastructure (2) vs affects multiple agents/sessions/goals (3)
 
-**Complex** means the work crosses system boundaries, has unclear or evolving scope, involves decisions that will affect other parts of the system, or genuinely requires prior context to get right. A data model redesign. A protocol change. Something that touches many files in non-obvious ways. An integration across systems. For these, you need a goal with detailed tasks — each description 8+ sentences, edge cases called out explicitly, risks named, relevant files spelled out completely. Ask clarifying questions before you write. Read the codebase. Break the work into small units where each task has a clear boundary and doesn't depend on implicit knowledge.
+Use the total to gate planning depth:
+
+- **Simple (4–6):** Lean plan. 1–3 tasks max. No deep analysis. Just the spec and the files.
+- **Medium (7–9):** Standard plan. Break into 3–6 tasks. Note one risk or unknown.
+- **Complex (10–12):** Deep plan. Break into 6+ granular tasks. Full scope analysis. Surface all unknowns. Add a "what could go wrong" section. Consider whether the goal itself needs to be refined before tasking.
+
+If the score is uncertain, read 2–3 relevant files first and adjust.
 
 For complex work that involves data model changes, migrations, or schema evolution — ask about backward compatibility before writing any tasks. What happens to existing records? Can old clients still work during rollout? Is this a hard cutover or a phased change? These answers change the implementation significantly and can't be recovered after the fact if assumed wrong. If the person hasn't thought it through, surface the question — one focused question — before you commit anything to IMI.
-
-If you're genuinely not sure which level something is, read 2–3 relevant files first. It usually becomes clear. If you can't read the files in your environment, write what you do know and explicitly note in the task's `context` what the executing agent must verify before starting — don't silently omit file-dependent details.
 
 ---
 

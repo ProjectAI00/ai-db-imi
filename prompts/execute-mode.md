@@ -166,6 +166,16 @@ If you notice something during execution that matters for the goal but isn't dir
 
 ## Execution Flow
 
+## Non-Negotiable Session Contract
+
+Before this session ends — regardless of whether the task is complete, partial, or blocked — you MUST call one of:
+
+- `imi complete <task_id> "summary"` — task is done
+- `imi fail <task_id> "reason"` — task is blocked, can't continue
+- `imi checkpoint <task_id> "progress"` — task is in progress, writing where you are so the next agent can pick up
+
+If you end a session without calling one of these, the work is invisible. No agent — including you in a future session — will know what happened. This is not optional. No exceptions. No "I'll do it at the end" — do it now, before you think you're done.
+
 0. **Quick viability triage before claiming** — confirm the title is actionable, there is at least one file or clear file hints, and at least one acceptance criterion is objectively verifiable. If `relevantFiles` is empty, description has no file hints, and criteria are subjective, fail immediately as a spec-quality issue without claiming.
 1. **`./imi start <task_id>`** — claim it before you touch anything
 2. **Read the full spec** — description, acceptance criteria, relevant files, context, tools. Actually read it.

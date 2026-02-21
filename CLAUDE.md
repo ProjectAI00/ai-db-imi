@@ -20,12 +20,22 @@ Session tools      →  session layer  (entire — records what happened, enable
 
 IMI is a persistent state engine for AI agents. It's a SQLite DB + bash CLI that any agent (Claude Code, Copilot, Cursor, Codex) can read from and write to. It solves the stateless agent problem: every session starts knowing what to build, why, and what was already learned.
 
-## Every Session — Do This First
+## ⚠️ Mandatory Session Contract — No Exceptions
+
+**Before you respond to anything, before you write a single line of code, before you answer a single question — run this:**
 
 ```bash
-./imi status          # See all goals, tasks, progress
-./imi context         # What matters right now
+./imi status          # Full goals + task state across all sessions
+./imi audit           # Which done tasks have no verification — catch drift immediately
 ```
+
+Then reason from what you read:
+- What goal does the user's request actually map to?
+- Is this work already in the DB (done, in progress, or todo)?
+- Does doing this contradict any recorded decision?
+- Is this the highest-priority unblocked task, or are we drifting?
+
+If you can't map the request to a goal in the DB, say so before doing anything. Do not answer from conversation memory. The DB is the source of truth across all sessions — your context window is not.
 
 ## When Working on a Task
 
@@ -37,6 +47,8 @@ IMI is a persistent state engine for AI agents. It's a SQLite DB + bash CLI that
 ```
 
 ## When Adding Goals/Tasks
+
+Before adding anything, check if it already exists: `./imi status` and scan the task list. If it exists and is marked done, run `./imi verify <id>` to check if it was actually done. Do not add duplicate tasks.
 
 ```bash
 ./imi add-goal <name> [desc] [priority] [why] [for_who] [success_criteria]

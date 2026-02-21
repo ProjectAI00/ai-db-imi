@@ -1567,7 +1567,6 @@ fn cmd_next(
             }
             println!("🔒 Task claimed and locked to this agent");
             println!("ID: {}  {}", task.id, task.title);
-            println!("First step: read this task's why/description, then begin implementation.");
             if !task.why_.is_empty() {
                 println!("Why: {}", task.why_);
             }
@@ -1587,6 +1586,25 @@ fn cmd_next(
                 }
                 if !g.success_signal.is_empty() {
                     println!("  Success: {}", g.success_signal);
+                }
+            }
+            if !task.acceptance_criteria.is_empty() {
+                println!("\nAcceptance criteria (verify against these — do not rewrite them to match your implementation):");
+                println!("{}", task.acceptance_criteria);
+            }
+            println!("\n⚠ Before you begin: find the direction note or decision in the DB that authorizes this task.");
+            println!("  If you can't trace this work to something a human wrote, stop and surface it.");
+            println!("  Do not reduce scope without recording why. Do not write your own acceptance criteria.");
+            if !direction.is_empty() {
+                println!("\nHuman direction:");
+                for d in &direction {
+                    println!("  - {}", d.0);
+                }
+            }
+            if !decisions.is_empty() {
+                println!("\nDecisions:");
+                for d in decisions.iter().take(5) {
+                    println!("  - {} — {}", d.0, d.1);
                 }
             }
             if let Some(failure) = last_failure {
@@ -1749,6 +1767,21 @@ fn cmd_complete(
     } else {
         summary
     };
+
+    // Surface original acceptance criteria so the agent verifies against what was asked, not what was built
+    if !out.is_json() {
+        let criteria: Option<String> = conn.query_row(
+            "SELECT COALESCE(acceptance_criteria,'') FROM tasks WHERE id=?1",
+            params![task.id],
+            |r| r.get(0),
+        ).optional().map_err(|e| e.to_string())?.flatten();
+        if let Some(c) = criteria.filter(|s| !s.is_empty()) {
+            println!("Acceptance criteria set for this task:");
+            println!("{}", c);
+            println!("Confirm your implementation satisfies these as written — not a reduced version of them.");
+            println!();
+        }
+    }
 
     conn.execute(
         "UPDATE tasks SET status='done', summary=?1, agent_id=?2, updated_at=?3, completed_at=?3 WHERE id=?4",

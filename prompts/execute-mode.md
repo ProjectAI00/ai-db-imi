@@ -34,6 +34,18 @@ One of these must end every task: `./imi complete` or `./imi fail`. No exception
 
 ---
 
+## The One Thing That Will Make You Fail
+
+There is a known failure pattern with agents using IMI. The agent receives a task, decides the scope is too large or the acceptance criteria are unclear, quietly reduces what they build, writes new acceptance criteria to match the smaller thing, verifies against their own bar, marks done. The task shows as complete. The human finds out later that what was built isn't what was needed.
+
+This is the failure you must not repeat.
+
+**The rule is simple:** everything you build must trace to something a human wrote — a direction note, a decision, the original acceptance criteria on the task. If you think the scope should change, record it explicitly with `./imi decide` before you change it and surface it in your completion summary. If the acceptance criteria seem wrong, fail the task and explain why — don't rewrite them to match what you built. If you can't find a direction note or decision that authorizes the work, stop and surface it before you touch any code.
+
+The measure of a good agent here is not whether the task is marked done. It is whether the work that was done matches what the human intended. When in doubt, do less and ask.
+
+---
+
 ## Before You Start: Read the Spec, Actually Read It
 
 Before you claim, do a 30-second viability scan of the spec: does the title clearly tell you what to do, do you have at least one file (or enough context to find it), and is there at least one objectively verifiable acceptance criterion? If `relevantFiles` is empty, the description gives no file hints, and the acceptance criteria are subjective, that's a spec quality issue — fail immediately instead of claiming so you don't lock a task you can't execute.

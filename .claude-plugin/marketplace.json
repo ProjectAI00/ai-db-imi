@@ -1,0 +1,23 @@
+{
+  "name": "imi",
+  "owner": {
+    "name": "ProjectAI00",
+    "email": "ProjectAI00@users.noreply.github.com"
+  },
+  "metadata": {
+    "description": "IMI — persistent state engine for AI agents. Goals, tasks, and memory across all sessions.",
+    "version": "1.0.0",
+    "homepage": "https://github.com/ProjectAI00/ai-db-imi"
+  },
+  "plugins": [
+    {
+      "name": "imi",
+      "description": "Gives any AI agent access to IMI — a persistent ops layer that stores goals, tasks, decisions, and memory across sessions. Agents read state before responding and write back when done. Solves the stateless agent problem.",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/imi"
+      ]
+    }
+  ]
+}

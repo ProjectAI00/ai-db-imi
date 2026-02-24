@@ -3,7 +3,7 @@
 
 import * as https from "https";
 import { execSync, spawnSync } from "child_process";
-import { existsSync, mkdirSync, chmodSync, unlinkSync, createWriteStream, copyFileSync } from "fs";
+import { existsSync, mkdirSync, chmodSync, unlinkSync, createWriteStream, copyFileSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { homedir, tmpdir } from "os";
 import { IncomingMessage } from "http";
@@ -104,12 +104,54 @@ function installSkills(): void {
   }
 
   if (installed.length > 0) {
-    console.log(`\nIMI skill installed into: ${installed.join(", ")}`);
+    console.log(`\nAgent skills installed into: ${installed.join(", ")}`);
     console.log(`Agents will now automatically run imi commands when you mention "imi".`);
   }
   if (skipped.length > 0) {
     console.log(`Skipped (not installed): ${skipped.join(", ")}`);
   }
+
+  // Plugin registration
+  console.log(`\nPlugin setup:`);
+  registerClaudePlugin();
+  if (existsSync(join(homedir(), ".copilot"))) {
+    console.log(`  GitHub Copilot CLI: run /plugin marketplace add ProjectAI00/ai-db-imi then /plugin install imi`);
+  }
+}
+
+function registerClaudePlugin(): void {
+  const claudePluginsDir = join(homedir(), ".claude", "plugins");
+  const knownFile = join(claudePluginsDir, "known_marketplaces.json");
+
+  if (!existsSync(claudePluginsDir)) return;
+
+  // Read existing marketplaces
+  let known: Record<string, unknown> = {};
+  try { known = JSON.parse(readFileSync(knownFile, "utf8")); } catch {}
+
+  if (known["imi"]) return; // already registered
+
+  const installLocation = join(claudePluginsDir, "marketplaces", "imi");
+
+  // Clone the repo so Claude Code can read the plugin manifest
+  if (!existsSync(installLocation)) {
+    try {
+      execSync(
+        `git clone --depth 1 https://github.com/ProjectAI00/ai-db-imi "${installLocation}"`,
+        { stdio: "pipe" }
+      );
+    } catch {
+      // git unavailable or no network — register the source URL anyway
+    }
+  }
+
+  known["imi"] = {
+    source: { source: "github", repo: "ProjectAI00/ai-db-imi" },
+    installLocation,
+    lastUpdated: new Date().toISOString(),
+  };
+  writeFileSync(knownFile, JSON.stringify(known, null, 2));
+  console.log(`  Claude Code: marketplace registered → run /plugin install imi to activate`);
 }
 
 function runInit(): void {

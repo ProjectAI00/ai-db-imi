@@ -3,7 +3,7 @@
 
 import * as https from "https";
 import { execSync, spawnSync } from "child_process";
-import { existsSync, mkdirSync, chmodSync, unlinkSync, createWriteStream } from "fs";
+import { existsSync, mkdirSync, chmodSync, unlinkSync, createWriteStream, copyFileSync } from "fs";
 import { join } from "path";
 import { homedir, tmpdir } from "os";
 import { IncomingMessage } from "http";
@@ -75,7 +75,45 @@ async function main(): Promise<void> {
   runInit();
 }
 
+function installSkills(): void {
+  // The bundled SKILL.md lives next to this script inside the npm package
+  const skillSrc = join(import.meta.dir, "skills", "imi", "SKILL.md");
+  if (!existsSync(skillSrc)) return;
+
+  // Agent CLIs that follow the open agentskills standard
+  const targets: { name: string; dir: string }[] = [
+    { name: "GitHub Copilot CLI", dir: join(homedir(), ".copilot", "skills", "imi") },
+    { name: "Claude Code",        dir: join(homedir(), ".claude",  "skills", "imi") },
+  ];
+
+  const installed: string[] = [];
+  const skipped: string[] = [];
+
+  for (const { name, dir } of targets) {
+    const parentDir = join(dir, "..");          // ~/.copilot/skills or ~/.claude/skills
+    const parentExists = existsSync(join(parentDir, ".."));  // ~/.copilot or ~/.claude
+
+    if (!parentExists) {
+      skipped.push(name);
+      continue;
+    }
+
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(skillSrc, join(dir, "SKILL.md"));
+    installed.push(name);
+  }
+
+  if (installed.length > 0) {
+    console.log(`\nIMI skill installed into: ${installed.join(", ")}`);
+    console.log(`Agents will now automatically run imi commands when you mention "imi".`);
+  }
+  if (skipped.length > 0) {
+    console.log(`Skipped (not installed): ${skipped.join(", ")}`);
+  }
+}
+
 function runInit(): void {
+  installSkills();
   const result = spawnSync(BIN, ["init"], { stdio: "inherit" });
   process.exit(result.status ?? 0);
 }

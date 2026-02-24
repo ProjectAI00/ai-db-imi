@@ -112,7 +112,7 @@ echo "── 1. Version ──────────────────�
 run --version
 assert_exit   "imi --version exits 0"   0
 assert_contains "imi --version output"   "imi"
-assert_contains "imi --version semver"   "0.3.0"
+assert_contains "imi --version semver"   "0.3.4"
 
 # ═════════════════════════════════════════════════════════════
 # 2. INIT
@@ -181,14 +181,14 @@ else
 fi
 
 # ═════════════════════════════════════════════════════════════
-# 4. GOALS
+# 4. STATUS (goals visible)
 # ═════════════════════════════════════════════════════════════
 echo ""
-echo "── 4. Goals ────────────────────────────────────────────"
+echo "── 4. Status (goals) ───────────────────────────────────"
 
-run goals
-assert_exit     "goals exits 0"              0
-assert_contains "goals lists 'Ship auth'"    "Ship auth"
+run status
+assert_exit     "status exits 0"              0
+assert_contains "status lists 'Ship auth'"    "Ship auth"
 
 # ═════════════════════════════════════════════════════════════
 # 5. ADD-TASK
@@ -222,15 +222,15 @@ if [[ -z "$TASK_ID_TESTS" ]]; then
 fi
 
 # ═════════════════════════════════════════════════════════════
-# 6. TASKS
+# 6. STATUS (tasks visible)
 # ═════════════════════════════════════════════════════════════
 echo ""
-echo "── 6. Tasks ────────────────────────────────────────────"
+echo "── 6. Status (tasks) ───────────────────────────────────"
 
-run tasks
-assert_exit     "tasks exits 0"                  0
-assert_contains "tasks lists 'Implement JWT'"    "Implement JWT"
-assert_contains "tasks lists 'Write auth tests'" "Write auth tests"
+run status
+assert_exit     "status exits 0"                  0
+assert_contains "status lists 'Implement JWT'"    "Implement JWT"
+assert_contains "status lists 'Write auth tests'" "Write auth tests"
 
 # ═════════════════════════════════════════════════════════════
 # 7. NEXT (claim a task)
@@ -600,7 +600,97 @@ else
 fi
 
 # ═════════════════════════════════════════════════════════════
+# 22. PARALLEL PERFORMANCE
+# ═════════════════════════════════════════════════════════════
+echo ""
+echo "── 22. Parallel performance ────────────────────────────"
+
+# Run 8 read commands in parallel, measure wall time
+PERF_START=$(date +%s%N)
+(
+  "$IMI_BIN" status  > /dev/null 2>&1 &
+  "$IMI_BIN" audit   > /dev/null 2>&1 &
+  "$IMI_BIN" context > /dev/null 2>&1 &
+  "$IMI_BIN" plan    > /dev/null 2>&1 &
+  "$IMI_BIN" status  > /dev/null 2>&1 &
+  "$IMI_BIN" audit   > /dev/null 2>&1 &
+  "$IMI_BIN" context > /dev/null 2>&1 &
+  "$IMI_BIN" plan    > /dev/null 2>&1 &
+  wait
+)
+PERF_END=$(date +%s%N)
+PERF_MS=$(( (PERF_END - PERF_START) / 1000000 ))
+
+if [[ "$PERF_MS" -lt 500 ]]; then
+  pass "8 parallel read commands completed in ${PERF_MS}ms (< 500ms)"
+else
+  fail "8 parallel read commands too slow: ${PERF_MS}ms" "expected < 500ms"
+fi
+
+# Sequential baseline for comparison
+SEQ_START=$(date +%s%N)
+"$IMI_BIN" status  > /dev/null 2>&1
+"$IMI_BIN" audit   > /dev/null 2>&1
+"$IMI_BIN" context > /dev/null 2>&1
+"$IMI_BIN" plan    > /dev/null 2>&1
+SEQ_END=$(date +%s%N)
+SEQ_MS=$(( (SEQ_END - SEQ_START) / 1000000 ))
+pass "4 sequential commands baseline: ${SEQ_MS}ms (parallel ran 8 in ${PERF_MS}ms)"
+
+# ═════════════════════════════════════════════════════════════
+# 23. SKILL INSTALL PATHS (new vs old install)
+# ═════════════════════════════════════════════════════════════
+echo ""
+echo "── 23. Skill install paths ─────────────────────────────"
+
+SKILL_SRC="$(dirname "$0")/../skills/imi/SKILL.md"
+SKILL_SCRIPT_SRC="$(dirname "$0")/../skills/imi/scripts/session-start.sh"
+
+if [[ -f "$SKILL_SRC" ]]; then
+  pass "SKILL.md exists at expected path"
+else
+  fail "SKILL.md missing" "$SKILL_SRC"
+fi
+
+if [[ -f "$SKILL_SCRIPT_SRC" ]]; then
+  pass "session-start.sh exists"
+else
+  fail "session-start.sh missing" "$SKILL_SCRIPT_SRC"
+fi
+
+# Verify SKILL.md frontmatter has required fields
+if grep -q '^name: imi' "$SKILL_SRC" && grep -q '^description:' "$SKILL_SRC"; then
+  pass "SKILL.md has required frontmatter (name + description)"
+else
+  fail "SKILL.md missing required frontmatter fields"
+fi
+
+if grep -q 'allowed-tools:' "$SKILL_SRC"; then
+  pass "SKILL.md has allowed-tools (pre-approves imi commands)"
+else
+  fail "SKILL.md missing allowed-tools — agents will prompt for permission"
+fi
+
+# Simulate new install: copy skill to a temp dir, verify it lands correctly
+FAKE_COPILOT="$TEST_DIR/fake-copilot"
+mkdir -p "$FAKE_COPILOT"
+SKILL_DEST="$FAKE_COPILOT/skills/imi"
+mkdir -p "$SKILL_DEST"
+cp "$SKILL_SRC" "$SKILL_DEST/SKILL.md"
+
+if [[ -f "$SKILL_DEST/SKILL.md" ]]; then
+  pass "skill install simulation: SKILL.md written to target dir"
+else
+  fail "skill install simulation: file not found after copy"
+fi
+
+# Simulate old install: no skills dir — ensure binary still works alone
+run status
+assert_exit "binary works standalone (old install path)" 0
+
+# ═════════════════════════════════════════════════════════════
 # SUMMARY
+
 # ═════════════════════════════════════════════════════════════
 echo ""
 echo "══════════════════════════════════════════════════════════"

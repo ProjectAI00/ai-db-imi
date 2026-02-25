@@ -100,8 +100,8 @@ impl OutputCtx {
 #[command(
     name = "imi",
     version = VERSION,
-    about = "Persistent state engine for AI agents",
-    long_about = "IMI — persistent state engine for AI agents.\n\nKeeps goals, tasks, and memory across sessions so every agent starts informed.\n\nAgent quickstart:\n  imi status    → see all goals, tasks, progress\n  imi context   → what matters right now\n  imi next      → claim the highest-priority task and get full context",
+    about = "Agent state engine",
+    long_about = "IMI — AI Product Ops state engine.\n\nCore loop:\n  imi context                    → human intent, decisions, and direction\n  imi plan                       → goals, tasks, and progress plan\n  imi run <task_id>              → execute a task with runtime writeback\n  imi check                      → verification snapshot",
     propagate_version = true
 )]
 struct Cli {
@@ -111,33 +111,41 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    #[command(about = "Initialize IMI in the current directory")]
+    #[command(hide = true, about = "Initialize IMI in the current directory")]
     Init,
-    #[command(alias = "s", about = "Show all goals, tasks, and progress")]
+    #[command(alias = "s", hide = true, about = "Show all goals, tasks, and progress")]
     Status,
-    #[command(alias = "g", about = "List all goals")]
-    Goals,
-    #[command(alias = "t", about = "List tasks, optionally filtered by status or goal")]
-    Tasks {
-        filter: Option<String>,
+    #[command(alias = "p", about = "Show goals, tasks, and progress plan")]
+    Plan,
+    #[command(about = "Archive a goal")]
+    Archive {
+        goal_id: String,
     },
     #[command(alias = "ctx", alias = "c", about = "Get full context for current work")]
     Context {
         goal_id: Option<String>,
     },
-    #[command(alias = "n", about = "Claim the highest-priority available task and get full context")]
+    #[command(
+        alias = "n",
+        hide = true,
+        about = "Claim the highest-priority available task and get full context"
+    )]
     Next {
         #[arg(long)]
         agent: Option<String>,
         goal_id: Option<String>,
     },
-    #[command(alias = "st", about = "Lock a specific task for this agent")]
+    #[command(alias = "st", hide = true, about = "Lock a specific task for this agent")]
     Start {
         #[arg(long)]
         agent: Option<String>,
         task_id: String,
     },
-    #[command(alias = "done", about = "Mark a task done and store summary as memory")]
+    #[command(
+        alias = "done",
+        hide = true,
+        about = "Mark a task done and store summary as memory"
+    )]
     Complete {
         #[arg(long)]
         agent: Option<String>,
@@ -155,7 +163,7 @@ enum Commands {
         task_id: String,
         model: Option<String>,
     },
-    #[command(about = "Run any command under IMI lifecycle automation")]
+    #[command(hide = true, about = "Run any command under IMI lifecycle automation")]
     Wrap {
         #[arg(long)]
         agent: Option<String>,
@@ -167,7 +175,11 @@ enum Commands {
         #[arg(last = true, num_args = 1.., allow_hyphen_values = true)]
         command: Vec<String>,
     },
-    #[command(about = "Orchestrate parallel task execution for a goal")]
+    #[command(
+        alias = "parallel",
+        hide = true,
+        about = "Orchestrate parallel task execution for a goal"
+    )]
     Orchestrate {
         goal_id: Option<String>,
         #[arg(long, default_value_t = 4)]
@@ -183,28 +195,30 @@ enum Commands {
         #[arg(last = true, num_args = 0.., allow_hyphen_values = true)]
         command: Vec<String>,
     },
-    #[command(about = "Release a task lock and record why it's blocked")]
+    #[command(hide = true, about = "Release a task lock and record why it's blocked")]
     Fail {
         #[arg(long)]
         agent: Option<String>,
         task_id: String,
         reason: Vec<String>,
     },
-    #[command(about = "Heartbeat to keep a task locked (~every 10 min)")]
+    #[command(hide = true, about = "Heartbeat to keep a task locked (~every 10 min)")]
     Ping {
         task_id: String,
     },
-    #[command(about = "Save mid-task progress and refresh heartbeat")]
+    #[command(hide = true, about = "Save mid-task progress and refresh heartbeat")]
     Checkpoint {
         task_id: String,
         note: Vec<String>,
     },
-    #[command(alias = "ag", about = "Create a new goal")]
-    AddGoal {
+    #[command(alias = "add-goal", alias = "ag", about = "Create a new goal")]
+    Goal {
         name: String,
         desc: Option<String>,
         priority: Option<String>,
         why: Option<String>,
+        #[arg(long = "why")]
+        why_long: Option<String>,
         for_who: Option<String>,
         success_signal: Option<String>,
         #[arg(long, value_delimiter = ',')]
@@ -214,13 +228,15 @@ enum Commands {
         #[arg(long)]
         workspace: Option<String>,
     },
-    #[command(alias = "at", about = "Add a task to a goal")]
-    AddTask {
+    #[command(alias = "add-task", alias = "at", about = "Add a task to a goal")]
+    Task {
         goal_id: String,
         title: String,
         desc: Option<String>,
         priority: Option<String>,
         why: Option<String>,
+        #[arg(long = "why")]
+        why_long: Option<String>,
         #[arg(long)]
         context: Option<String>,
         #[arg(long, value_delimiter = ',')]
@@ -232,12 +248,19 @@ enum Commands {
         #[arg(long)]
         workspace: Option<String>,
     },
-    #[command(alias = "mem", alias = "m", about = "View or add persistent memories")]
+    #[command(
+        alias = "mem",
+        alias = "m",
+        hide = true,
+        about = "View or add persistent memories"
+    )]
     Memory {
+        #[arg(long, help = "List human-verified lessons")]
+        lessons: bool,
         #[command(subcommand)]
         action: Option<MemoryAction>,
     },
-    #[command(about = "Add a human-verified lesson about prior agent mistakes")]
+    #[command(hide = true, about = "Add a human-verified lesson about prior agent mistakes")]
     Lesson {
         args: Vec<String>,
         #[arg(long)]
@@ -245,8 +268,6 @@ enum Commands {
         #[arg(long)]
         verified_by: Option<String>,
     },
-    #[command(about = "List human-verified lessons")]
-    Lessons,
     #[command(alias = "d", about = "Record an architectural or design decision")]
     Decide {
         what: String,
@@ -257,31 +278,39 @@ enum Commands {
     Log {
         note: Vec<String>,
     },
-    #[command(alias = "rm", about = "Delete a goal or task by ID")]
+    #[command(alias = "rm", hide = true, about = "Delete a goal or task by ID")]
     Delete {
         id: String,
     },
-    #[command(about = "Wipe all state (destructive — use with caution)")]
+    #[command(hide = true, about = "Wipe all state (destructive — use with caution)")]
     Reset {
         #[arg(short, long)]
         force: bool,
     },
-    #[command(alias = "stat", about = "Show usage statistics")]
+    #[command(alias = "stat", hide = true, about = "Show usage statistics")]
     Stats,
-    #[command(about = "Print agent instructions for a given target")]
+    #[command(hide = true, about = "Print agent instructions for a given target")]
     Instructions {
         target: Option<String>,
     },
-    #[command(about = "Verify whether a task's acceptance criteria is actually met")]
+    #[command(hide = true, about = "Verify whether a task's acceptance criteria is actually met")]
     Verify {
         task_id: String,
     },
-    #[command(about = "Audit done tasks — flags those with no acceptance criteria or no completion summary")]
+    #[command(hide = true, about = "Audit done tasks — flags those with no acceptance criteria or no completion summary")]
     Audit,
-    #[command(about = "LLM reasoning pass — surfaces what doesn't make sense, what to kill, what's next")]
+    #[command(hide = true, about = "LLM reasoning pass — surfaces what doesn't make sense, what to kill, what's next")]
     Think,
-    #[command(about = "Conversationally capture goals, decisions, and direction")]
-    Ops,
+    #[command(about = "Check verification state (all tasks or one task)")]
+    Check {
+        task_id: Option<String>,
+    },
+    #[command(about = "Update imi to the latest version")]
+    Update,
+    #[command(hide = true, about = "Show context or log a direction note")]
+    Ops {
+        args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -429,17 +458,19 @@ fn main() {
         emit_error(out, &e);
         std::process::exit(1);
     }
+
+    maybe_auto_update(&conn, out);
 }
 
 fn dispatch(conn: &mut Connection, db_path: &Path, out: OutputCtx, command: Commands) -> Result<(), String> {
     match command {
         Commands::Init => cmd_init(conn, db_path, out),
         Commands::Status => cmd_status(conn, db_path, out),
-        Commands::Goals => cmd_goals(conn, out),
-        Commands::Tasks { filter } => cmd_tasks(conn, out, filter),
+        Commands::Plan => cmd_plan(conn, db_path, out),
+        Commands::Archive { goal_id } => cmd_archive(conn, out, goal_id),
         Commands::Context { goal_id } => cmd_context(conn, out, goal_id),
         Commands::Next { agent, goal_id } => cmd_next(conn, out, agent, goal_id),
-        Commands::Start { agent, task_id } => cmd_start(conn, out, agent, task_id),
+        Commands::Start { agent, task_id } => cmd_next(conn, out, agent, Some(task_id)),
         Commands::Complete {
             agent,
             task_id,
@@ -491,36 +522,46 @@ fn dispatch(conn: &mut Connection, db_path: &Path, out: OutputCtx, command: Comm
         } => cmd_fail(conn, out, agent, task_id, reason.join(" ")),
         Commands::Ping { task_id } => cmd_ping(conn, out, task_id),
         Commands::Checkpoint { task_id, note } => cmd_checkpoint(conn, out, task_id, note.join(" ")),
-        Commands::AddGoal {
+        Commands::Goal {
             name,
             desc,
             priority,
             why,
+            why_long,
             for_who,
             success_signal,
             relevant_files,
             context,
             workspace,
-        } => cmd_add_goal(conn, out, name, desc, priority, why, for_who, success_signal, relevant_files, context, workspace),
-        Commands::AddTask {
+        } => cmd_add_goal(conn, out, name, desc, priority, why_long.or(why), for_who, success_signal, relevant_files, context, workspace),
+        Commands::Task {
             goal_id,
             title,
             desc,
             priority,
             why,
+            why_long,
             context,
             relevant_files,
             tools,
             acceptance_criteria,
             workspace,
-        } => cmd_add_task(conn, out, goal_id, title, desc, priority, why, context, relevant_files, tools, acceptance_criteria, workspace),
-        Commands::Memory { action } => cmd_memory(conn, out, action),
+        } => cmd_add_task(conn, out, goal_id, title, desc, priority, why_long.or(why), context, relevant_files, tools, acceptance_criteria, workspace),
+        Commands::Memory { lessons, action } => {
+            if lessons {
+                if action.is_some() {
+                    return Err("cannot combine memory subcommands with --lessons".to_string());
+                }
+                cmd_lessons(conn, out)
+            } else {
+                cmd_memory(conn, out, action)
+            }
+        }
         Commands::Lesson {
             args,
             correct_behavior,
             verified_by,
         } => cmd_lesson(conn, out, args, correct_behavior, verified_by),
-        Commands::Lessons => cmd_lessons(conn, out),
         Commands::Decide { what, why, affects } => cmd_decide(conn, out, what, why, affects),
         Commands::Log { note } => cmd_log(conn, out, note.join(" ")),
         Commands::Delete { id } => cmd_delete(conn, out, id),
@@ -530,7 +571,9 @@ fn dispatch(conn: &mut Connection, db_path: &Path, out: OutputCtx, command: Comm
         Commands::Verify { task_id } => cmd_verify(conn, out, task_id),
         Commands::Audit => cmd_audit(conn, out),
         Commands::Think => cmd_think(conn, out),
-        Commands::Ops => cmd_ops(conn, out),
+        Commands::Check { task_id } => cmd_check(conn, out, task_id),
+        Commands::Update => cmd_update(out),
+        Commands::Ops { args } => cmd_ops(conn, out, args),
     }
 }
 
@@ -554,8 +597,8 @@ fn command_key(command: &Commands) -> &'static str {
     match command {
         Commands::Init => "init",
         Commands::Status => "status",
-        Commands::Goals => "goals",
-        Commands::Tasks { .. } => "tasks",
+        Commands::Plan => "plan",
+        Commands::Archive { .. } => "archive",
         Commands::Context { .. } => "context",
         Commands::Next { .. } => "next",
         Commands::Start { .. } => "start",
@@ -566,11 +609,10 @@ fn command_key(command: &Commands) -> &'static str {
         Commands::Fail { .. } => "fail",
         Commands::Ping { .. } => "ping",
         Commands::Checkpoint { .. } => "checkpoint",
-        Commands::AddGoal { .. } => "add-goal",
-        Commands::AddTask { .. } => "add-task",
+        Commands::Goal { .. } => "goal",
+        Commands::Task { .. } => "task",
         Commands::Memory { .. } => "memory",
         Commands::Lesson { .. } => "lesson",
-        Commands::Lessons => "lessons",
         Commands::Decide { .. } => "decide",
         Commands::Log { .. } => "log",
         Commands::Delete { .. } => "delete",
@@ -580,8 +622,156 @@ fn command_key(command: &Commands) -> &'static str {
         Commands::Verify { .. } => "verify",
         Commands::Audit => "audit",
         Commands::Think => "think",
-        Commands::Ops => "ops",
+        Commands::Check { .. } => "check",
+        Commands::Update => "update",
+        Commands::Ops { .. } => "ops",
     }
+}
+
+fn get_platform_target() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-musl"),
+        _ => None,
+    }
+}
+
+fn fetch_latest_version() -> Option<String> {
+    let out = Command::new("curl")
+        .args([
+            "-s", "--max-time", "5",
+            "-H", "Accept: application/vnd.github.v3+json",
+            "-H", "User-Agent: imi-cli",
+            "https://api.github.com/repos/ProjectAI00/ai-db-imi/releases/latest",
+        ])
+        .output()
+        .ok()?;
+    let body = String::from_utf8(out.stdout).ok()?;
+    let json: Value = serde_json::from_str(&body).ok()?;
+    let tag = json["tag_name"].as_str()?;
+    Some(tag.trim_start_matches('v').to_string())
+}
+
+fn is_newer(latest: &str, current: &str) -> bool {
+    let parse = |s: &str| -> (u32, u32, u32) {
+        let parts: Vec<u32> = s.split('.').filter_map(|p| p.parse().ok()).collect();
+        (
+            parts.first().copied().unwrap_or(0),
+            parts.get(1).copied().unwrap_or(0),
+            parts.get(2).copied().unwrap_or(0),
+        )
+    };
+    parse(latest) > parse(current)
+}
+
+fn install_version(version: &str) -> Result<(), String> {
+    let target = get_platform_target().ok_or("Unsupported platform")?;
+    let url = format!(
+        "https://github.com/ProjectAI00/ai-db-imi/releases/download/v{version}/imi-{target}.tar.gz"
+    );
+    let current_bin = std::env::current_exe().map_err(|e| format!("cannot find binary: {e}"))?;
+    let bin_dir = current_bin.parent().ok_or("cannot find bin dir")?;
+    let tmp = format!(
+        "/tmp/imi-update-{}.tar.gz",
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    );
+    let dl = Command::new("curl")
+        .args(["-fsSL", "--max-time", "60", "-o", &tmp, &url])
+        .status()
+        .map_err(|e| format!("curl failed: {e}"))?;
+    if !dl.success() {
+        return Err(format!("download failed for {url}"));
+    }
+    Command::new("tar")
+        .args(["-xzf", &tmp, "-C", bin_dir.to_str().unwrap_or("/tmp")])
+        .status()
+        .map_err(|e| format!("tar failed: {e}"))?;
+    let _ = fs::remove_file(&tmp);
+    Ok(())
+}
+
+fn maybe_auto_update(conn: &Connection, out: OutputCtx) {
+    if !matches!(out.mode, OutputMode::Human) {
+        return;
+    }
+    let last_check: i64 = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key='last_update_check' LIMIT 1",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    if now - last_check < 86_400 {
+        return;
+    }
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('last_update_check', ?1)",
+        params![now.to_string()],
+    );
+    let Some(latest) = fetch_latest_version() else { return };
+    if !is_newer(&latest, VERSION) {
+        return;
+    }
+    if out.color {
+        print!("\x1b[2m→ updating imi to v{latest}... \x1b[0m");
+    } else {
+        print!("→ updating imi to v{latest}... ");
+    }
+    let _ = io::stdout().flush();
+    match install_version(&latest) {
+        Ok(()) => {
+            if out.color {
+                println!("\x1b[32mdone\x1b[0m");
+            } else {
+                println!("done");
+            }
+        }
+        Err(e) => {
+            if out.color {
+                println!("\x1b[2mskipped: {e}\x1b[0m");
+            } else {
+                println!("skipped: {e}");
+            }
+        }
+    }
+}
+
+fn cmd_update(out: OutputCtx) -> Result<(), String> {
+    if out.color {
+        print!("Checking for updates... ");
+    } else {
+        print!("Checking for updates... ");
+    }
+    let _ = io::stdout().flush();
+    let latest = fetch_latest_version()
+        .ok_or("Could not reach GitHub — check your connection.")?;
+    if !is_newer(&latest, VERSION) {
+        println!("already on latest (v{VERSION})");
+        return Ok(());
+    }
+    if out.color {
+        println!("v{latest} available");
+        print!("Installing... ");
+    } else {
+        println!("v{latest} available");
+        print!("Installing... ");
+    }
+    let _ = io::stdout().flush();
+    install_version(&latest)?;
+    if out.color {
+        println!("\x1b[32mdone\x1b[0m — updated v{VERSION} → v{latest}. Restart to use the new version.");
+    } else {
+        println!("done — updated v{VERSION} → v{latest}. Restart to use the new version.");
+    }
+    Ok(())
 }
 
 fn cmd_init(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), String> {
@@ -611,22 +801,20 @@ fn cmd_init(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), Str
 
         println!();
         println!("  {}  {}", bold("IMI"), dim(&format!("v{VERSION}")));
-        println!("  {}", dim("The persistent brain for AI agents."));
+        println!("  {}", dim("AI Product Ops — intent, progress, alignment."));
         println!();
         println!("  {} {}", green("✓"), format!("Initialized → {}", db_path.display()));
         println!();
-        println!("  {}", bold("Start here:"));
+        println!("  {}", bold("Quick checks:"));
         println!("  {}  {}",
-            "  imi add-goal \"name\" \"why it matters\"",
-            dim("← define what you're building"));
+            "  imi context                         ",
+            dim("← what you're building and why"));
         println!("  {}  {}",
-            "  imi next --toon                     ",
-            dim("← hand context to any AI agent"));
+            "  imi plan                            ",
+            dim("← goals, tasks, and progress"));
         println!("  {}  {}",
-            "  imi status                          ",
-            dim("← see your dashboard"));
-        println!();
-        println!("  {}  aibyimi.com", dim("→"));
+            "  imi check                           ",
+            dim("← are we aligned and verified?"));
         println!();
     }
     Ok(())
@@ -634,7 +822,7 @@ fn cmd_init(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), Str
 
 fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), String> {
     let goals_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM goals", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM goals WHERE status!='archived'", [], |r| r.get(0))
         .unwrap_or(0);
     let (tasks_count, done_count, wip_count, review_count, todo_count): (i64, i64, i64, i64, i64) = conn
         .query_row(
@@ -656,7 +844,7 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
 
     if out.is_json() {
         let mut goal_json = Vec::new();
-        for g in &goals {
+        for g in goals.iter().filter(|g| g.status != "archived") {
             let tasks = get_tasks_for_goal(conn, &g.id)?;
             let total = tasks.len() as i64;
             let done = tasks.iter().filter(|t| t.status == "done").count() as i64;
@@ -699,7 +887,10 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
 
     if out.is_toon() {
         let done_goals_count = goals.iter().filter(|g| g.status == "done").count();
-        let active_goals_count = goals.len() - done_goals_count;
+        let active_goals_count = goals
+            .iter()
+            .filter(|g| g.status != "done" && g.status != "archived")
+            .count();
         let mut t = ToonBuilder::new();
         t.section(
             "counts",
@@ -719,7 +910,10 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
 
         let mut goal_rows = Vec::new();
         let mut task_rows = Vec::new();
-        for g in goals.into_iter().filter(|g| g.status != "done") {
+        for g in goals
+            .into_iter()
+            .filter(|g| g.status != "done" && g.status != "archived")
+        {
             let tasks = get_tasks_for_goal(conn, &g.id)?;
             let total = tasks.len();
             let done = tasks.iter().filter(|t| t.status == "done").count();
@@ -730,7 +924,10 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
                 done.to_string(),
                 total.to_string(),
             ]);
-            for task in tasks {
+            for task in tasks
+                .into_iter()
+                .filter(|t| t.status == "todo" || t.status == "in_progress")
+            {
                 task_rows.push(vec![
                     g.id.clone(),
                     task.id,
@@ -778,7 +975,10 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
 
     let all_goals = get_goals(conn)?;
     let done_goals_ct = all_goals.iter().filter(|g| g.status == "done").count();
-    for g in all_goals.into_iter().filter(|g| g.status != "done") {
+    for g in all_goals
+        .into_iter()
+        .filter(|g| g.status != "done" && g.status != "archived")
+    {
         let tasks = get_tasks_for_goal(conn, &g.id)?;
         let total = tasks.len();
         let done = tasks.iter().filter(|t| t.status == "done").count();
@@ -791,7 +991,13 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
             total,
             g.id
         );
-        for task in tasks {
+        if done > 0 {
+            println!("    {} {} done", status_icon(out, "done"), done);
+        }
+        for task in tasks
+            .into_iter()
+            .filter(|t| t.status == "todo" || t.status == "in_progress")
+        {
             let agent = task.agent_id.unwrap_or_default();
             if agent.is_empty() {
                 println!(
@@ -826,8 +1032,11 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
     Ok(())
 }
 
-fn cmd_goals(conn: &Connection, out: OutputCtx) -> Result<(), String> {
-    let goals = get_goals(conn)?;
+fn cmd_goals(conn: &Connection, out: OutputCtx, archived: bool) -> Result<(), String> {
+    let goals: Vec<GoalRow> = get_goals(conn)?
+        .into_iter()
+        .filter(|g| (archived && g.status == "archived") || (!archived && g.status != "archived"))
+        .collect();
 
     if out.is_json() {
         println!(
@@ -881,6 +1090,19 @@ fn cmd_goals(conn: &Connection, out: OutputCtx) -> Result<(), String> {
         );
     }
 
+    Ok(())
+}
+
+fn cmd_archive(conn: &Connection, out: OutputCtx, goal_prefix: String) -> Result<(), String> {
+    let goal_id = resolve_id_prefix(conn, "goals", &goal_prefix)?
+        .ok_or_else(|| format!("goal not found: {goal_prefix}"))?;
+    let now = now_ts();
+    conn.execute(
+        "UPDATE goals SET status='archived', updated_at=?1 WHERE id=?2",
+        params![now, goal_id],
+    )
+    .map_err(|e| e.to_string())?;
+    emit_simple_ok(out, "Archived goal")?;
     Ok(())
 }
 
@@ -981,6 +1203,15 @@ fn cmd_tasks(conn: &Connection, out: OutputCtx, filter: Option<String>) -> Resul
         }
     }
     Ok(())
+}
+
+fn cmd_plan(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), String> {
+    if out.is_json() || out.is_toon() {
+        return cmd_status(conn, db_path, out);
+    }
+    cmd_context(conn, out, None)?;
+    println!();
+    cmd_status(conn, db_path, out)
 }
 
 fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Result<(), String> {
@@ -1353,16 +1584,18 @@ fn cmd_next(
     goal_prefix: Option<String>,
 ) -> Result<(), String> {
     let released = release_stale_locks(conn)?;
-    let agent_id = current_agent(agent.as_deref());
-
     let goal_filter = if let Some(prefix) = goal_prefix {
-        Some(
-            resolve_id_prefix(conn, "goals", &prefix)?
-                .ok_or_else(|| format!("goal not found: {prefix}"))?,
-        )
+        if let Some(goal_id) = resolve_id_prefix(conn, "goals", &prefix)? {
+            Some(goal_id)
+        } else if let Some(task_id) = resolve_id_prefix(conn, "tasks", &prefix)? {
+            return cmd_start(conn, out, agent, task_id);
+        } else {
+            return Err(format!("goal or task not found: {prefix}"));
+        }
     } else {
         None
     };
+    let agent_id = current_agent(agent.as_deref());
 
     match claim_next_task(conn, goal_filter.as_deref(), &agent_id)? {
         ClaimResult::NoTasks => {
@@ -2836,110 +3069,16 @@ fn ops_read_line(prompt: &str) -> Result<String, String> {
     Ok(line.trim().to_string())
 }
 
-fn ops_read_multiline(prompt: &str) -> Result<String, String> {
-    println!("{}", prompt);
-    println!("(Enter a blank line when done)");
-    let mut lines = Vec::new();
-    loop {
-        let mut line = String::new();
-        let bytes = io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
-        if bytes == 0 { break; }
-        let t = line.trim_end().to_string();
-        if t.trim().is_empty() { break; }
-        lines.push(t);
+fn cmd_ops(conn: &Connection, out: OutputCtx, args: Vec<String>) -> Result<(), String> {
+    if args.is_empty() {
+        return cmd_context(conn, out, None);
     }
-    Ok(lines.join(" "))
-}
-
-fn cmd_ops(conn: &Connection, out: OutputCtx) -> Result<(), String> {
-    println!("── imi ops ─────────────────────────────────────────");
-    println!("Structured PM intake. Answer each question freely —");
-    println!("no special phrasing needed. Ctrl+C to abort.\n");
-
-    // Q1 — what / the bet
-    let what = ops_read_multiline("1. What are you thinking about building or changing?\n   (Describe the problem or bet in your own words)")?;
-    if what.trim().is_empty() {
-        return Err("Aborted — no input.".to_string());
-    }
-
-    // Q2 — why / the reasoning
-    let why = ops_read_multiline("\n2. Why does this matter? What problem does it solve, and for who?")?;
-
-    // Q3 — what was considered and rejected
-    let rejected = ops_read_multiline("\n3. What did you consider and decide against? Why?")?;
-
-    // Q4 — assumptions / what could invalidate this
-    let assumptions = ops_read_multiline("\n4. What assumptions is this based on? What would change your mind?")?;
-
-    // Q5 — what changed (optional)
-    let changed = ops_read_multiline("\n5. What changed recently that prompted this? (skip if nothing new)")?;
-
-    // Q6 — name / label for the goal (derived or explicit)
-    let goal_name_prompt = format!("\n6. Short name for this goal (e.g. '{}'):\n   > ",
-        what.split_whitespace().take(5).collect::<Vec<_>>().join(" "));
-    let goal_name_raw = ops_read_line(&goal_name_prompt)?;
-    let goal_name = if goal_name_raw.trim().is_empty() {
-        what.split_whitespace().take(6).collect::<Vec<_>>().join(" ")
-    } else {
-        goal_name_raw.trim().to_string()
-    };
-
-    // Build structured output
-    println!("\n── Extracted intent ────────────────────────────────");
-    println!("Goal:        {}", goal_name);
-    println!("What:        {}", what);
-    if !why.trim().is_empty()         { println!("Why:         {}", why); }
-    if !rejected.trim().is_empty()    { println!("Rejected:    {}", rejected); }
-    if !assumptions.trim().is_empty() { println!("Assumptions: {}", assumptions); }
-    if !changed.trim().is_empty()     { println!("Changed:     {}", changed); }
-
-    // Compose direction note from full context
-    let mut direction_parts = vec![what.clone()];
-    if !why.trim().is_empty()         { direction_parts.push(format!("Why: {}", why)); }
-    if !assumptions.trim().is_empty() { direction_parts.push(format!("Assuming: {}", assumptions)); }
-    if !changed.trim().is_empty()     { direction_parts.push(format!("What changed: {}", changed)); }
-    let direction_note = direction_parts.join(" | ");
-
-    println!("\nThis will write:");
-    println!("  • 1 goal:           \"{}\"", goal_name);
-    if !rejected.trim().is_empty() {
-        println!("  • 1 decision:       what was chosen and what was rejected");
-    }
-    println!("  • 1 direction note: full reasoning captured above");
-
-    let confirm = ops_read_line("\nPersist to IMI? [y/N]: ")?;
-    if !matches!(confirm.to_lowercase().as_str(), "y" | "yes") {
-        println!("Canceled — nothing written.");
-        return Ok(());
-    }
-
-    // Persist goal
-    cmd_add_goal(
-        conn, out,
-        goal_name.clone(),
-        Some(what.clone()),
-        Some("medium".to_string()),
-        Some(why.clone()),
-        None, None, vec![],
-        Some(direction_note.clone()),
-        None,
-    )?;
-
-    // Persist decision (what was chosen vs rejected)
-    if !rejected.trim().is_empty() {
-        let decision_what = format!("{} (not: {})", goal_name, rejected);
-        let decision_why = if why.trim().is_empty() { rejected.clone() } else { why.clone() };
-        cmd_decide(conn, out, decision_what, decision_why, Some(goal_name.clone()))?;
-    }
-
-    // Persist direction note
-    cmd_log(conn, out, direction_note)?;
-
-    if out.is_json() {
-        println!("{}", json!({"ok": true}));
-    } else {
-        println!("\nIntent saved. Run `imi status` to see the new goal.");
-    }
+    conn.execute(
+        "INSERT INTO direction_notes (id, content, author, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![gen_id(), args.join(" "), current_agent(None), now_ts()],
+    )
+    .map_err(|e| e.to_string())?;
+    println!("Direction noted.");
     Ok(())
 }
 
@@ -3486,7 +3625,7 @@ fn query_active_goals(conn: &Connection, limit: i64) -> Result<Vec<GoalRow>, Str
         .prepare(
             "SELECT id, name, COALESCE(description,''), COALESCE(why,''), COALESCE(for_who,''), COALESCE(success_signal,''), COALESCE(status,'todo'), COALESCE(priority,'medium'), COALESCE(created_at,0)
              FROM goals
-             WHERE status != 'done'
+             WHERE status != 'done' AND status != 'archived'
              ORDER BY CASE priority
                 WHEN 'critical' THEN 4
                 WHEN 'high' THEN 3
@@ -3523,6 +3662,7 @@ fn query_wip_tasks(conn: &Connection, limit: i64) -> Result<Vec<TaskRowWithGoal>
              FROM tasks t
              LEFT JOIN goals g ON t.goal_id=g.id
              WHERE t.status='in_progress'
+               AND (t.goal_id IS NULL OR COALESCE(g.status,'') != 'archived')
              ORDER BY COALESCE(t.updated_at,t.created_at,0) DESC LIMIT ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -3647,7 +3787,7 @@ fn query_active_memories(conn: &Connection, limit: i64) -> Result<Vec<MemoryRow>
                     COALESCE(m.type,'learning'), COALESCE(m.source,'agent'), COALESCE(m.created_at,0)
              FROM memories m
              WHERE m.goal_id IS NULL
-                OR m.goal_id IN (SELECT id FROM goals WHERE status != 'done')
+                OR m.goal_id IN (SELECT id FROM goals WHERE status != 'done' AND status != 'archived')
              ORDER BY
                 CASE WHEN m.goal_id IN (
                     SELECT DISTINCT goal_id FROM tasks WHERE status='in_progress' AND goal_id IS NOT NULL
@@ -3732,7 +3872,9 @@ fn claim_next_task(conn: &mut Connection, goal_id: Option<&str>, agent: &str) ->
             "SELECT id, title, COALESCE(description,''), COALESCE(why,''), COALESCE(context,''), goal_id,
                     COALESCE(relevant_files,'[]'), COALESCE(tools,'[]'), COALESCE(acceptance_criteria,''), COALESCE(workspace_path,'')
              FROM tasks
-             WHERE status='todo' AND goal_id=?1
+             WHERE status='todo'
+               AND goal_id=?1
+               AND goal_id IN (SELECT id FROM goals WHERE status!='archived')
              ORDER BY CASE priority
                 WHEN 'critical' THEN 4
                 WHEN 'high' THEN 3
@@ -3765,6 +3907,7 @@ fn claim_next_task(conn: &mut Connection, goal_id: Option<&str>, agent: &str) ->
                     COALESCE(relevant_files,'[]'), COALESCE(tools,'[]'), COALESCE(acceptance_criteria,''), COALESCE(workspace_path,'')
              FROM tasks
              WHERE status='todo'
+               AND (goal_id IS NULL OR goal_id IN (SELECT id FROM goals WHERE status!='archived'))
              ORDER BY CASE priority
                 WHEN 'critical' THEN 4
                 WHEN 'high' THEN 3
@@ -4086,6 +4229,13 @@ fn instructions_copilot() -> &'static str {
 
 fn instructions_windsurf() -> &'static str {
     "# IMI Ops for Windsurf\n\nBoot:\nimi status\nimi context\n\nExecution loop:\nimi next\nimi start <task_id>\nimi complete <task_id> \"summary\"\nimi memory add <goal_id> <key> \"insight\""
+}
+
+fn cmd_check(conn: &Connection, out: OutputCtx, task_id: Option<String>) -> Result<(), String> {
+    if let Some(task_id) = task_id {
+        return cmd_verify(conn, out, task_id);
+    }
+    cmd_audit(conn, out)
 }
 
 fn cmd_verify(conn: &Connection, out: OutputCtx, task_prefix: String) -> Result<(), String> {

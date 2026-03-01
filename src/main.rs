@@ -100,8 +100,8 @@ impl OutputCtx {
 #[command(
     name = "imi",
     version = VERSION,
-    about = "Agent state engine",
-    long_about = "IMI — AI Product Ops state engine.\n\nCore loop:\n  imi context                    → human intent, decisions, and direction\n  imi plan                       → goals, tasks, and progress plan\n  imi run <task_id>              → execute a task with runtime writeback\n  imi check                      → verification snapshot",
+    about = "Persistent memory and planning layer for AI coding agents",
+    long_about = "IMI — tracks goals, tasks, decisions, and direction across every session.\n\nStart here:\n  imi context                    → what we're building, decisions, active tasks\n  imi think                      → is what we're building still the right thing?\n  imi plan                       → full goal and task list\n\nCapture human thinking:\n  imi decide \"what\" \"why\"        → firm calls, what was ruled out, why\n  imi log \"note\"                 → direction, instincts, things to revisit",
     propagate_version = true
 )]
 struct Cli {
@@ -249,7 +249,6 @@ enum Commands {
     },
     #[command(
         alias = "mem",
-        alias = "m",
         hide = true,
         about = "View or add persistent memories"
     )]

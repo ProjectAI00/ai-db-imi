@@ -156,6 +156,9 @@ enum Commands {
         /// What the agent was uncertain about — where understanding may have drifted from intent
         #[arg(long)]
         uncertainty: Option<String>,
+        /// Did it actually work? e.g. "deployed successfully, no issues" or "failed — auth bug introduced". Captures real-world outcome, not just what was built.
+        #[arg(long)]
+        outcome: Option<String>,
     },
     #[command(about = "Run hankweave for a task and auto-complete on success")]
     Run {
@@ -478,7 +481,8 @@ fn dispatch(conn: &mut Connection, db_path: &Path, out: OutputCtx, command: Comm
             summary,
             interpretation,
             uncertainty,
-        } => cmd_complete(conn, out, agent, task_id, summary.join(" "), interpretation, uncertainty),
+            outcome,
+        } => cmd_complete(conn, out, agent, task_id, summary.join(" "), interpretation, uncertainty, outcome),
         Commands::Run { task_id, model } => cmd_run(conn, db_path, out, task_id, model),
         Commands::Wrap {
             agent,
@@ -975,7 +979,9 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
     println!("## Active goals");
 
     let all_goals = get_goals(conn)?;
+    let archived_goals_ct = all_goals.iter().filter(|g| g.status == "archived").count();
     let done_goals_ct = all_goals.iter().filter(|g| g.status == "done").count();
+    let completed_ct = done_goals_ct + archived_goals_ct;
     for g in all_goals
         .into_iter()
         .filter(|g| g.status != "done" && g.status != "archived")
@@ -1021,11 +1027,11 @@ fn cmd_status(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), S
         }
         println!();
     }
-    if done_goals_ct > 0 {
+    if completed_ct > 0 {
         println!(
-            "## Completed goals\n  ✓ {} completed goal{}  (run `imi goals` to list)",
-            done_goals_ct,
-            if done_goals_ct == 1 { "" } else { "s" }
+            "## Completed goals\n  ✓ {} completed goal{}  (run `imi goals --archived` to list)",
+            completed_ct,
+            if completed_ct == 1 { "" } else { "s" }
         );
         println!();
     }
@@ -2094,6 +2100,7 @@ fn cmd_complete(
     summary: String,
     interpretation: Option<String>,
     uncertainty: Option<String>,
+    outcome: Option<String>,
 ) -> Result<(), String> {
     let agent_id = current_agent(agent.as_deref());
     let task = resolve_task(conn, &task_id)?;
@@ -2161,8 +2168,33 @@ fn cmd_complete(
         }
     }
 
-    if let Some(goal_id) = task.goal_id {
-        sync_goal(conn, &goal_id)?;
+    if let Some(out_note) = outcome {
+        if !out_note.trim().is_empty() {
+            conn.execute(
+                "INSERT INTO memories (id, goal_id, task_id, key, value, type, reasoning, source, created_at)
+                 VALUES (?1, ?2, ?3, 'outcome', ?4, 'outcome', ?4, ?5, ?6)",
+                params![gen_id(), task.goal_id, task.id, out_note, agent_id, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    if let Some(ref goal_id) = task.goal_id {
+        sync_goal(conn, goal_id)?;
+        // auto-archive when all tasks under the goal are done
+        let goal_status: String = conn
+            .query_row("SELECT status FROM goals WHERE id=?1", params![goal_id], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if goal_status == "done" {
+            conn.execute(
+                "UPDATE goals SET status='archived', updated_at=?1 WHERE id=?2",
+                params![now, goal_id],
+            )
+            .map_err(|e| e.to_string())?;
+            if !out.is_json() {
+                println!("🗂  Goal complete — auto-archived. Run `imi goals --archived` to see it.");
+            }
+        }
     }
 
     emit_simple_ok(out, "✅ Task marked done and completion summary saved")?;
@@ -2386,7 +2418,7 @@ fn cmd_run(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Completed via imi run (no summary.md)".to_string());
-    cmd_complete(conn, out, Some(agent_id), task.0, summary, None, None)
+    cmd_complete(conn, out, Some(agent_id), task.0, summary, None, None, None)
 }
 
 fn cmd_wrap(
@@ -2458,7 +2490,7 @@ fn cmd_wrap(
             return Ok(());
         }
         let summary = format!("Wrapped command succeeded: {}", command.join(" "));
-        return cmd_complete(conn, out, Some(agent_id), task.id, summary, None, None);
+        return cmd_complete(conn, out, Some(agent_id), task.id, summary, None, None, None);
     }
 
     let reason = format!("wrapped command exited with status {status}: {}", command.join(" "));

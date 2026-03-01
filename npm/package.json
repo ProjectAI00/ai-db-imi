@@ -1,11 +1,18 @@
 {
-  "name": "@imi-ai/imi",
-  "version": "0.3.7",
+  "name": "imi-agent",
+  "version": "0.3.8",
   "description": "IMI — the persistent brain for AI agents. One command to install and initialize.",
   "bin": {
     "imi": "./run.ts"
   },
-  "keywords": ["ai", "agents", "cli", "imi", "memory", "persistent"],
+  "keywords": [
+    "ai",
+    "agents",
+    "cli",
+    "imi",
+    "memory",
+    "persistent"
+  ],
   "author": "aibyimi",
   "license": "MIT",
   "repository": {

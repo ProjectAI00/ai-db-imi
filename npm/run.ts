@@ -8,7 +8,8 @@ import { join } from "path";
 import { homedir, tmpdir } from "os";
 import { IncomingMessage } from "http";
 
-const pkg = require("../package.json") as { version: string };
+import { readFileSync } from "fs";
+const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url).pathname, "utf8")) as { version: string };
 const VERSION: string = pkg.version;
 const REPO = "ProjectAI00/ai-db-imi";
 const BIN_DIR = join(homedir(), ".local", "bin");

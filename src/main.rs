@@ -115,13 +115,13 @@ enum Commands {
     Init,
     #[command(alias = "s", hide = true, about = "Show all goals, tasks, and progress")]
     Status,
-    #[command(alias = "p", about = "Show goals, tasks, and progress plan")]
+    #[command(alias = "p", about = "Show all goals and tasks with status. Use when: you need a full list of what exists before creating new goals/tasks (to avoid duplicates).")]
     Plan,
     #[command(about = "Archive a goal")]
     Archive {
         goal_id: String,
     },
-    #[command(alias = "ctx", alias = "c", about = "Get full context for current work")]
+    #[command(alias = "ctx", alias = "c", about = "Run this first, every session. Shows what's being built, active tasks, recent decisions, and direction. Use when: starting a session, picking up where we left off, or answering 'what should we work on today'.")]
     Context {
         goal_id: Option<String>,
     },
@@ -211,7 +211,7 @@ enum Commands {
         task_id: String,
         note: Vec<String>,
     },
-    #[command(alias = "add-goal", alias = "ag", about = "Create a new goal")]
+    #[command(alias = "add-goal", alias = "ag", about = "Use when: a new initiative, feature, or area of work is being started ('we need to build a dashboard', 'let's add payments'). A goal groups multiple tasks under one outcome.")]
     Goal {
         name: String,
         desc: Option<String>,
@@ -228,7 +228,7 @@ enum Commands {
         #[arg(long)]
         workspace: Option<String>,
     },
-    #[command(alias = "add-task", alias = "at", about = "Add a task to a goal")]
+    #[command(alias = "add-task", alias = "at", about = "Use when: something specific needs to be built or done and should be tracked ('add this to the backlog', 'we need to do X'). Always attach to a goal_id from imi context.")]
     Task {
         goal_id: String,
         title: String,
@@ -268,13 +268,13 @@ enum Commands {
         #[arg(long)]
         verified_by: Option<String>,
     },
-    #[command(alias = "d", about = "Record an architectural or design decision")]
+    #[command(alias = "d", about = "Use when: a choice was made ('we're going with postgres'), something is ruled out ('never store raw card numbers'), a feature is being cancelled ('scrap email notifications'), or any direction that should be permanent. Examples: imi decide \"use postgres\" \"simpler ops\" / imi decide \"cancel email feature\" \"not worth it\"")]
     Decide {
         what: String,
         why: String,
         affects: Option<String>,
     },
-    #[command(alias = "l", about = "Log an insight or direction note")]
+    #[command(alias = "l", about = "Use when: a thought or direction comes up that isn't a firm decision yet ('we should probably rethink onboarding', 'something feels off about the auth flow'). Tentative observations, half-formed ideas, things to revisit. Use decide instead if it's a firm call.")]
     Log {
         note: Vec<String>,
     },
@@ -1444,6 +1444,7 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
         println!("  (none)");
     } else {
         for g in &active_goals {
+            let tasks = get_tasks_for_goal(conn, &g.id)?;
             println!(
                 "  {} {} {}  {} ago",
                 status_icon(out, &g.status),
@@ -1453,6 +1454,18 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
             );
             if !g.why_.is_empty() {
                 println!("    why: {}", g.why_);
+            }
+            for task in tasks
+                .into_iter()
+                .filter(|t| t.status == "todo" || t.status == "in_progress")
+            {
+                println!(
+                    "    {} {} {}  {}",
+                    status_icon(out, &task.status),
+                    priority_icon(out, &task.priority),
+                    task.title,
+                    task.id
+                );
             }
         }
     }

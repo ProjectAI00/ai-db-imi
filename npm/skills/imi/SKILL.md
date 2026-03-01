@@ -27,12 +27,18 @@ This is the ONLY way to load project state. Do not substitute with file reads.
 
 ## Available commands — use these, nothing else
 ```bash
-imi context          # full project context — run this before EVERY response
-imi status           # goals, tasks, progress dashboard
-imi plan             # what to work on next
-imi check            # alignment and verification
-imi next             # single next task to work on
-imi help             # full command list
+imi context     # RUN FIRST EVERY SESSION — what's being built, active tasks, recent decisions
+imi think       # reason over everything: are we building the right thing?
+imi plan        # full goal and task list with status
+imi next        # single next task to work on
+imi check       # verification state of tasks
+
+imi goal        # create a new goal (run imi plan first to avoid duplicates)
+imi task        # add a task, always attach to a goal_id from imi context
+imi complete    # mark task done + store summary as persistent memory (NEVER skip)
+imi decide      # record a firm decision with what was ruled out and why
+imi log         # capture a direction, instinct, or concern not yet a decision
+imi mlesson     # store a lesson when agent repeated a mistake or needed correction
 ```
 
 ## Rules

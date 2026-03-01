@@ -1,14 +1,22 @@
-# IMI CLI
+# IMI
 
-> The persistent brain for AI agents. A SQLite DB + bash CLI that any agent can read from and write to.
+Like a lot of engineers, I spend a lot of time working with AI coding agents — Cursor, Claude Code — to ship products and features.
 
-## The Problem
+The better the models got, the harder it became to track what was being shipped, what still needed to be built, and what was actually worth building. Our team ships so much that we pretty much gave up on keeping up with GitHub PRs or task boards. It got genuinely overwhelming.
 
-AI agents are stateless. Every session starts from zero — no memory of what was decided, learned, or shipped. Founders re-explain context every time.
+So I built IMI.
 
-## The Solution
+IMI is an AI agent that just solves it. It tracks all decisions, notes, goals, and tasks inside your codebase. Every time you start a new session, you can recall previous context and have your agent know exactly where to pick up from.
 
-IMI stores goals, tasks, decisions, and memories in a local SQLite DB. Any agent (Claude Code, GitHub Copilot CLI, Cursor, Codex) reads `imi context`, then `imi plan`, and can execute with `imi run` — no briefing required.
+Just start with something like:
+
+```
+imi what do we need to do — check logs and previous decisions
+```
+
+Agents like Claude Code instantly know where you left off. Every time an agent ships something, it updates the board in the background. And the best part: you don't have to do much. Just a simple prompt to update this or that.
+
+---
 
 ## Install
 

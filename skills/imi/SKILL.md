@@ -1,43 +1,54 @@
 ---
 name: imi
 description: >
-  Activate when "imi" or "IMI" appears anywhere in the user's message, or when
-  the project has a .imi/ directory. Do not wait — immediately run
-  scripts/session-start.sh (or: imi status && imi audit in parallel) before
-  responding. IMI stores goals, tasks, decisions, and memory across sessions.
-  The DB is truth. Your context window is not.
+  Activate when "imi" appears, when .imi/ exists, or when a prompt is about
+  project goals/tasks/priorities/decisions/progress ("what next", "where we
+  left off", "add to backlog", "done", "we decided", "scrap feature"). Run
+  `imi context` before routing. If `imi` is missing, tell user to run:
+  `bunx @imi-ai/imi@latest`. IMI is source of truth; chat memory is not.
 license: MIT
 metadata:
   author: ProjectAI00
-  version: "1.0"
+  version: "1.1"
 compatibility: Requires imi CLI. Install: bunx @imi-ai/imi@latest
 allowed-tools: Bash(imi:*)
 ---
 
 # IMI — Persistent State for AI Agents
 
-## Activation — Run This First, Every Time
-
-When this skill is active, execute the session-start script immediately:
+## Required First Step
 
 ```bash
-bash scripts/session-start.sh
+imi context
 ```
 
-Or inline (runs in parallel, ~10ms total):
+Then route the prompt using the table below.
+
+If `imi` is not in PATH, instruct:
 
 ```bash
-imi status & imi audit & wait
+bunx @imi-ai/imi@latest
 ```
 
-Then reason before responding:
-- Which goal does this request map to?
-- Is this already tracked as done, in-progress, or pending?
-- Does this contradict a recorded decision?
+## Prompt → Command Routing
 
-If the request doesn't map to any goal, say so. Do not act from memory.
+Use explicit command mapping even when user never says "imi":
 
-## Working on Tasks
+| Human intent pattern | Command(s) |
+|---|---|
+| Resume work ("keep working on auth") | `imi context && imi next --toon` |
+| Where we left off ("where did we leave off") | `imi context` |
+| Choose work now ("what should we work on today") | `imi context && imi next --toon` |
+| Record decision ("we decided postgres not mysql") | `imi decide "Use Postgres instead of MySQL" "Team decision"` |
+| Add backlog item ("add retry logic to backlog") | `imi context` then `imi add-task <goal_id> "<title>" --why "<reason>"` |
+| Record non-negotiable rule ("do NOT store raw card numbers") | `imi decide "<rule>" "<why>"` (optional: `imi log "<note>"`) |
+| Mark completion ("stripe integration is done") | `imi context` then `imi complete <task_id> "<summary>"` |
+| Cancel feature ("scrap email notifications") | `imi context` then `imi decide "Cancel <feature>" "<why>"` then `imi delete <task_or_goal_id>` |
+| Net-new initiative ("build dashboard for usage metrics") | `imi add-goal "<name>" "<description>"` then `imi add-task ...` |
+| Repeated agent mistake ("keeps forgetting token expiry") | `imi decide "<guardrail>" "<why>"` (or `imi log` if just observation) |
+| Tentative direction ("we should probably rethink onboarding") | `imi log "<direction note>"`, escalate to `imi add-goal` when confirmed |
+
+## Task Lifecycle
 
 ```bash
 imi next --toon              # claim highest-priority unblocked task + full context
@@ -46,9 +57,7 @@ imi complete <id> "summary"  # write back — this is how sessions compound
 imi fail <id> "reason"       # release lock, record why it's blocked
 ```
 
-## Adding Goals and Tasks
-
-Run `imi status` first — never create duplicates.
+## Goal/Task Creation
 
 ```bash
 imi add-goal <name> [desc] [priority] [why] [for_who] [success_criteria]
@@ -57,18 +66,9 @@ imi log "direction note"
 imi decide "what" "why" [affects]
 ```
 
-## Architecture — Do Not Violate
+## Important Clarifications
 
-IMI is the ops layer. Execution tools (Claude Code, Copilot, Cursor) are the
-run layer. IMI does not call execution tools. They plug into IMI.
-
-Human logs (`imi log`, `imi decide`) are the highest-priority layer.
-Everything an agent does should trace back to a human-recorded goal.
-
-## Key Rules
-
-- Fill `acceptance_criteria`, `relevant_files`, `workspace_path` on every task
-- Every task ends with `imi complete` — this is how context compounds
-- Never guess at the goal — read it from the DB
-
-See [scripts/session-start.sh](scripts/session-start.sh) for the fast parallel session bootstrap.
+- If user asks for generic coding help with no project-state intent (e.g. "write a debounce function"), do the coding task directly and skip IMI routing.
+- For "scrap/cancel/kill", always record a decision before deleting stale goals/tasks.
+- Prefer `imi decide` for durable rules; use `imi log` for tentative direction.
+- For commands needing IDs (`complete`, `delete`, `add-task`), run `imi context` first and use IDs shown there.

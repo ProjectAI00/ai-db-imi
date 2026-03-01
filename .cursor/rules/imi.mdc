@@ -1,0 +1,13 @@
+---
+description: "IMI workflow enforcement for every Cursor session"
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# IMI session contract
+
+- At the start of every session, run `imi context` before doing any work.
+- Use `imi task` for tracking work instead of Cursor's built-in todo system.
+- When a task is finished, run `imi complete <id> "summary"`.
+- When making architectural decisions, run `imi decide "what" "why"`.

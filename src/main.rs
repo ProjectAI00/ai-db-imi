@@ -143,8 +143,7 @@ enum Commands {
     },
     #[command(
         alias = "done",
-        hide = true,
-        about = "Mark a task done and store summary as memory"
+        about = "Use when: a task or piece of work is finished. Always call this after completing work — it marks the task done AND stores your summary as a persistent memory so the next session knows what was built and why. Never skip this. The summary is how context compounds across sessions."
     )]
     Complete {
         #[arg(long)]
@@ -260,7 +259,7 @@ enum Commands {
         #[command(subcommand)]
         action: Option<MemoryAction>,
     },
-    #[command(hide = true, about = "Add a human-verified lesson about prior agent mistakes")]
+    #[command(about = "Use when: the agent made the same mistake more than once, or a human had to correct something that should have been obvious. Stores a verified lesson so every future agent session sees it before starting work. Example: agent keeps forgetting to check token expiry — store it here so it never happens again.")]
     Lesson {
         args: Vec<String>,
         #[arg(long)]
@@ -299,7 +298,7 @@ enum Commands {
     },
     #[command(hide = true, about = "Audit done tasks — flags those with no acceptance criteria or no completion summary")]
     Audit,
-    #[command(hide = true, about = "LLM reasoning pass — surfaces what doesn't make sense, what to kill, what's next")]
+    #[command(about = "Use when: you want the agent to reason over everything in the DB and ask whether we're still building the right things. Dumps full project state — goals, tasks, decisions, direction notes, memories — with a PM-style reasoning prompt. The agent reads this and surfaces what no longer aligns, what to challenge or kill, what's missing, and what the real next move is. Use when stuck, when things feel off, or when the human asks 'are we still on track?'")]
     Think,
     #[command(about = "Check verification state (all tasks or one task)")]
     Check {

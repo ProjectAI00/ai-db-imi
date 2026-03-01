@@ -25,14 +25,14 @@ This also means IMI scales. A solo founder using it alone still benefits — eve
 Here's what you can run, and more importantly, when and why you'd reach for each one.
 
 ```bash
-./imi status
+./imi plan
 ```
-This gives you the full dashboard — every active goal, every task under it, current progress, what's in flight. Run this when someone wants a broad overview or you need to orient yourself before a strategy conversation. It's the lay of the land.
+This gives you the planning dashboard — active goals, active tasks, progress, and what's in flight. Run this when someone wants a broad overview or you need to orient before a strategy conversation.
 
 ```bash
 ./imi context
 ```
-This gives you what matters right now — the highest-priority work, recent decisions, active tasks, any notes that are relevant to the current moment. This is your default before answering any question about project state. If someone asks "how's the API work going?" or "what are we focused on this week?" — run `./imi context` first, then answer. Never answer state questions from memory.
+This gives you what matters right now — human direction, key decisions, and current focus. This is your default before answering any state question. If someone asks "how's the API work going?" or "what are we focused on this week?" — run `./imi context` first, then answer. Never answer from memory.
 
 ```bash
 ./imi context <goal_id>
@@ -40,9 +40,9 @@ This gives you what matters right now — the highest-priority work, recent deci
 When someone wants to go deep on a specific goal — its tasks, its history, decisions that affected it, learnings attached to it — this is what you run. Use it when the conversation zooms in on one area and you want the full picture of that goal before discussing it.
 
 ```bash
-./imi tasks wip
+./imi check
 ```
-Shows what's currently in progress — tasks that have been claimed and are actively being worked. This is the right command when someone asks "what's actually happening right now?" or you need to understand what's locked before suggesting what to prioritize next.
+Shows verification state for completed work and what still needs review. Use this when someone asks if delivery is actually landing or if quality/alignment is drifting.
 
 ```bash
 ./imi decide "what" "why" [affects]
@@ -77,11 +77,11 @@ Capture things before they evaporate. Conversations are where decisions get made
 
 ## Common Scenarios
 
-**Someone asks for a status check.** Run `./imi status` or `./imi context` depending on whether they want breadth or depth. Summarize what you see honestly — what's healthy, what looks slow, what's in flight. If something looks stuck or off-track, say so.
+**Someone asks for a status check.** Run `./imi plan` or `./imi context` depending on whether they want breadth or depth. Summarize what you see honestly — what's healthy, what looks slow, what's in flight. If something looks stuck or off-track, say so.
 
 **Someone wants to discuss a goal or direction.** Run `./imi context <goal_id>` to get the full picture first. Then engage genuinely — ask questions if you need to understand the real concern, share your read on the state of the goal, and help them think through the options. If the conversation lands on a decision, log it before the session ends.
 
-**Someone is trying to figure out what to work on next.** Run `./imi context` and `./imi tasks wip` to understand what's active and what the current priorities are. Help them think through what's highest leverage. If a priority shift seems right, note it — `./imi log` at minimum, `./imi decide` if it's a real direction change.
+**Someone is trying to figure out what to work on next.** Run `./imi context`, then `./imi plan` to understand what's active and what current priorities are. Help them think through what's highest leverage. If a priority shift seems right, note it — `./imi log` at minimum, `./imi decide` if it's a real direction change.
 
 **A decision gets made in conversation.** Log it immediately with `./imi decide`. Don't wait until the end of the session. Capture the what and the why while it's fresh. If it affects a specific goal, use the `affects` argument.
 

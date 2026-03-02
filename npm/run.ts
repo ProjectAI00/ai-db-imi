@@ -135,6 +135,14 @@ function installSkills(): void {
   if (existsSync(join(cwd, ".imi"))) {
     writeFileSync(join(cwd, "AGENTS.md"), allContent);
     writeFileSync(join(cwd, "CLAUDE.md"), allContent);
+
+    // GitHub Copilot CLI custom agent profile (.github/agents/imi.agent.md)
+    const agentSrc = join(skillsDir, "imi.agent.md");
+    if (existsSync(agentSrc)) {
+      const agentsDir = join(cwd, ".github", "agents");
+      mkdirSync(agentsDir, { recursive: true });
+      writeFileSync(join(agentsDir, "imi.agent.md"), readFileSync(agentSrc, "utf8"));
+    }
   }
 
   // Plugin registration

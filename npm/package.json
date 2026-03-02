@@ -1,7 +1,7 @@
 {
   "name": "imi-agent",
   "version": "0.3.18",
-  "description": "IMI \u2014 the persistent brain for AI agents. One command to install and initialize.",
+  "description": "IMI — the persistent brain for AI agents. One command to install and initialize.",
   "bin": {
     "imi": "./run.ts"
   },

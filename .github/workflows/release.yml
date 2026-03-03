@@ -120,6 +120,7 @@ jobs:
           # Save the version-bumped file, then jump to latest main to avoid
           # rebase conflicts when the tag's base commit is already in main history
           cp npm/package.json /tmp/npm-package.json
+          git checkout -- npm/package.json
           git fetch origin main
           git checkout origin/main -B main
           cp /tmp/npm-package.json npm/package.json

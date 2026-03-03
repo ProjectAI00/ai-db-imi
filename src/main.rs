@@ -35,7 +35,69 @@ fn get_or_create_install_id(conn: &Connection) -> String {
     id
 }
 
-fn track(event: &str, install_id: &str, duration_ms: u128) {
+fn get_or_create_device_id() -> String {
+    if let Ok(id) = env::var("IMI_DEVICE_ID") {
+        let trimmed = id.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    let home = match env::var("HOME") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => return format!("uid_{}", gen_id()),
+    };
+    let path = PathBuf::from(home).join(".imi").join("device_id");
+    if let Ok(existing) = fs::read_to_string(&path) {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    let id = format!("uid_{}", gen_id());
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, &id);
+    id
+}
+
+fn stable_hash(input: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in input.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn repo_hash_from_db_path(db_path: &Path) -> String {
+    let repo_path = if db_path.file_name().and_then(|n| n.to_str()) == Some("state.db")
+        && db_path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            == Some(".imi")
+    {
+        db_path
+            .parent()
+            .and_then(|p| p.parent())
+            .unwrap_or_else(|| db_path.parent().unwrap_or_else(|| Path::new(".")))
+    } else {
+        db_path.parent().unwrap_or_else(|| Path::new("."))
+    };
+    stable_hash(&repo_path.to_string_lossy())
+}
+
+fn is_ci_env() -> bool {
+    env::var("CI").is_ok()
+        || env::var("GITHUB_ACTIONS").is_ok()
+        || env::var("GITLAB_CI").is_ok()
+        || env::var("BUILDKITE").is_ok()
+        || env::var("CIRCLECI").is_ok()
+        || env::var("JENKINS_URL").is_ok()
+}
+
+fn track(event: &str, device_id: &str, install_id: &str, repo_id: &str, duration_ms: u128) {
     if env::var("IMI_NO_ANALYTICS").is_ok() {
         return;
     }
@@ -43,14 +105,20 @@ fn track(event: &str, install_id: &str, duration_ms: u128) {
         return;
     }
     let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let is_ci = is_ci_env();
+    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
     let body = format!(
-        r#"{{"api_key":"{key}","event":"imi_{event}","distinct_id":"{id}","properties":{{"version":"{ver}","platform":"{plat}","duration_ms":{dur},"$lib":"imi-cli"}}}}"#,
+        r#"{{"api_key":"{key}","event":"imi_{event}","distinct_id":"{device_id}","properties":{{"version":"{ver}","platform":"{plat}","duration_ms":{dur},"is_ci":{is_ci},"interactive":{interactive},"install_id":"{install_id}","repo_id":"{repo_id}","$lib":"imi-cli"}}}}"#,
         key = POSTHOG_KEY,
         event = event,
-        id = install_id,
+        device_id = device_id,
         ver = VERSION,
         plat = platform,
         dur = duration_ms,
+        is_ci = is_ci,
+        interactive = interactive,
+        install_id = install_id,
+        repo_id = repo_id,
     );
     let _ = Command::new("curl")
         .args([
@@ -460,7 +528,9 @@ fn main() {
     let duration_ms = start.elapsed().as_millis();
     log_event(&conn, &command_name, None, None, None, duration_ms as i64);
     let install_id = get_or_create_install_id(&conn);
-    track(&command_name, &install_id, duration_ms);
+    let device_id = get_or_create_device_id();
+    let repo_id = repo_hash_from_db_path(&db_path);
+    track(&command_name, &device_id, &install_id, &repo_id, duration_ms);
 
     if let Err(e) = result {
         emit_error(out, &e);

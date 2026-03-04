@@ -2135,6 +2135,7 @@ fn spawn_lifecycle_watchdog(
 
 fn ensure_task_in_progress(conn: &Connection, task_id: &str, agent_id: &str) -> Result<TaskRow, String> {
     let mut task = resolve_task(conn, task_id)?;
+    let was_in_progress = task.status == "in_progress";
     if task.status == "done" {
         return Err("task is already done".to_string());
     }
@@ -2155,6 +2156,15 @@ fn ensure_task_in_progress(conn: &Connection, task_id: &str, agent_id: &str) -> 
     if let Some(goal_id) = &task.goal_id {
         sync_goal(conn, goal_id)?;
     }
+    if !was_in_progress {
+        let note = format!("Task started by {agent_id}");
+        conn.execute(
+            "INSERT INTO memories (id, goal_id, task_id, key, value, type, reasoning, source, created_at)
+             VALUES (?1, ?2, ?3, 'task_started', ?4, 'lifecycle', ?4, ?5, ?6)",
+            params![gen_id(), task.goal_id.clone(), task.id.clone(), note, agent_id, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
 
     task.status = "in_progress".to_string();
     task.agent_id = Some(agent_id.to_string());
@@ -2164,6 +2174,15 @@ fn ensure_task_in_progress(conn: &Connection, task_id: &str, agent_id: &str) -> 
 fn task_status(conn: &Connection, task_id: &str) -> Result<String, String> {
     conn.query_row("SELECT status FROM tasks WHERE id=?1", params![task_id], |r| r.get(0))
         .map_err(|e| e.to_string())
+}
+
+fn runtime_completion_summary(mode: &str, detail: &str) -> String {
+    format!(
+        "Built: Completed task via IMI {mode} execution path ({detail}). \
+Interpretation: Treated this as runtime-mediated task completion and persisted writeback through IMI. \
+Drift/uncertainty: External worker output details were not attached to this auto-summary; verify acceptance criteria evidence in code/tests/logs. \
+Future-agent note: Run `imi check <task_id>` and confirm criteria coverage before relying on this completion for downstream planning."
+    )
 }
 
 fn cmd_complete(
@@ -2214,6 +2233,20 @@ fn cmd_complete(
             task.goal_id,
             task.id,
             summary_text,
+            agent_id,
+            now
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    let completion_note = format!("Task completed by {agent_id}");
+    conn.execute(
+        "INSERT INTO memories (id, goal_id, task_id, key, value, type, reasoning, source, created_at)
+         VALUES (?1, ?2, ?3, 'task_completed', ?4, 'lifecycle', ?4, ?5, ?6)",
+        params![
+            gen_id(),
+            task.goal_id.clone(),
+            task.id.clone(),
+            completion_note,
             agent_id,
             now
         ],
@@ -2432,7 +2465,7 @@ fn cmd_run(
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Completed via imi run (no summary.md)".to_string());
+        .unwrap_or_else(|| runtime_completion_summary("run", "no summary.md provided by worker"));
     cmd_complete(conn, out, Some(agent_id), claimed.id, summary, None, None, None)
 }
 
@@ -2516,7 +2549,7 @@ fn cmd_wrap(
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "Completed via imi wrap (no summary.md)".to_string());
+            .unwrap_or_else(|| runtime_completion_summary("wrap", "no summary.md provided by worker"));
         return cmd_complete(conn, out, Some(agent_id), task.id, summary, None, None, None);
     }
 
@@ -2572,7 +2605,7 @@ fn cmd_wrap(
             emit_simple_ok(out, "Wrapped command succeeded (task already completed)")?;
             return Ok(());
         }
-        let summary = format!("Wrapped command succeeded: {}", command.join(" "));
+        let summary = runtime_completion_summary("wrap", &format!("command succeeded: {}", command.join(" ")));
         return cmd_complete(conn, out, Some(agent_id), task.id, summary, None, None, None);
     }
 
@@ -2591,7 +2624,7 @@ struct OrchestrateWorker {
 
 /// Resolve which CLI command workers should use when no explicit command is given.
 /// - None / "hankweave" → use `imi run` (hankweave, default)
-/// - "auto"             → detect from env vars: Claude Code → claude, OpenCode → opencode, Copilot → copilot, else hankweave
+/// - "auto"             → detect from env vars: Copilot → copilot, Claude Code → claude, OpenCode → opencode, else hankweave
 /// - "claude"           → `sh -c 'claude -p "$(cat "$IMI_TASK_CONTEXT_FILE")" --dangerously-skip-permissions'`
 /// - "opencode"         → `opencode`
 /// - "codex"            → `sh -c 'codex exec "$(cat "$IMI_TASK_CONTEXT_FILE")"'`
@@ -2601,13 +2634,13 @@ fn resolve_worker_cli(cli: Option<&str>) -> Option<Vec<String>> {
     let cli = match cli {
         None | Some("hankweave") => return None,
         Some("auto") => {
-            // Detect from environment
-            if env::var("CLAUDE_CODE_SSE_PORT").is_ok() || env::var("CLAUDE_CODE_ENTRYPOINT").is_ok() {
+            // Prefer the currently active user CLI session when multiple markers are present.
+            if env::var("GH_COPILOT_SESSION_ID").is_ok() || env::var("COPILOT_AGENT_SESSION").is_ok() {
+                "copilot"
+            } else if env::var("CLAUDE_CODE_SSE_PORT").is_ok() || env::var("CLAUDE_CODE_ENTRYPOINT").is_ok() {
                 "claude"
             } else if env::var("OPENCODE_SESSION").is_ok() {
                 "opencode"
-            } else if env::var("GH_COPILOT_SESSION_ID").is_ok() || env::var("COPILOT_AGENT_SESSION").is_ok() {
-                "copilot"
             } else {
                 return None; // fall back to hankweave
             }
@@ -4148,6 +4181,19 @@ fn claim_next_task(conn: &mut Connection, goal_id: Option<&str>, agent: &str) ->
             if let Some(goal) = &candidate.goal_id {
                 let _ = sync_goal(conn, goal);
             }
+            let note = format!("Task claimed by {agent}");
+            let _ = conn.execute(
+                "INSERT INTO memories (id, goal_id, task_id, key, value, type, reasoning, source, created_at)
+                 VALUES (?1, ?2, ?3, 'task_claimed', ?4, 'lifecycle', ?4, ?5, ?6)",
+                params![
+                    gen_id(),
+                    candidate.goal_id.clone(),
+                    candidate.id.clone(),
+                    note,
+                    agent,
+                    now
+                ],
+            );
             return Ok(ClaimResult::Claimed(candidate));
         }
     }

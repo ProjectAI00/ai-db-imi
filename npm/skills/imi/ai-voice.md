@@ -1,6 +1,7 @@
 # IMI — AI Voice Guide
 
 Use this guide when writing `imi complete`, `imi log`, and `imi lesson` content. It defines what to say and how to say it so future agents can trust and reuse stored context.
+Execution policy (including completion gates and acceptance verification rules) lives in `execute-mode.md`; this file is voice/quality guidance only.
 
 The content an agent writes back to IMI is the only thing that survives a session. When a new agent picks up this goal in a future session, everything they know about what's been done, what was decided, and what to watch out for comes from what previous agents wrote. If you write vague summaries, you erase your own work from shared memory. Write like someone who cares that the next agent doesn't have to start over.
 

@@ -170,6 +170,19 @@ imi complete <task_id> "Rewrote plan-mode.md and execute-mode.md with full comma
 
 ---
 
+## Done Gate (non-negotiable)
+
+Before you call `imi complete`, pass this gate in order:
+
+1. **Criteria check:** Restate the original acceptance criteria exactly as written and verify each one with concrete evidence (commands, file diffs, output, or observed behavior).
+2. **Mismatch handling:** If any criterion is unmet or unverifiable, do not pretend it's complete — log the gap clearly and include what remains.
+3. **Evidence in summary:** Include what you verified, how you verified it, and what you could not verify.
+4. **Writeback quality:** Use `--interpretation`, `--uncertainty`, and `--outcome` whenever scope changed, ambiguity existed, or verification was partial.
+
+A task can be technically marked done in tooling, but in IMI terms it is only truly done when this gate is satisfied.
+
+---
+
 ## Logging decisions and observations mid-task
 
 When you make a choice during execution — between two approaches, between keeping something or replacing it, between two ways to structure something — log it:

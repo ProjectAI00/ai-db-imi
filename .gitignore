@@ -4,3 +4,5 @@
 *.db-wal
 target/
 npm/node_modules/
+.env.posthog
+scripts/.env.posthog

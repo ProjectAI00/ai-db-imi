@@ -152,3 +152,19 @@ imi next --agent engineer-c --toon   # Agent C claims task 3
 ```
 
 If a task is abandoned, IMI auto-releases it after 30 minutes. The next agent picks it up with full failure context.
+
+## Local usage metrics (PostHog)
+
+To quickly inspect human vs agent vs CI/bot usage from PostHog:
+
+```bash
+cp scripts/.env.posthog.example scripts/.env.posthog
+# fill POSTHOG_PROJECT_ID + POSTHOG_API_KEY
+scripts/posthog-usage.sh
+```
+
+Optional window:
+
+```bash
+DAYS=30 scripts/posthog-usage.sh
+```

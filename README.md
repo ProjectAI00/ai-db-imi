@@ -1,32 +1,38 @@
 # IMI
 
-Like a lot of engineers, I spend a lot of time working with AI coding agents — Cursor, Claude Code — to ship products and features.
+IMI is the AI product manager for AI agents.
 
-The better the models got, the harder it became to track what was being shipped, what still needed to be built, and what was actually worth building. Our team ships so much that we pretty much gave up on keeping up with GitHub PRs or task boards. It got genuinely overwhelming.
+You open Claude Code in the morning and your agent has no idea what happened yesterday. You re-explain the codebase, the decisions, the blockers, and what matters now. Then you do it again in the next session. IMI fixes that by keeping the thinking layer inside your codebase so every session starts with context instead of drift.
 
-So I built IMI.
+Website: https://useimi.com
 
-IMI is an AI agent that just solves it. It tracks all decisions, notes, goals, and tasks inside your codebase. Every time you start a new session, you can recall previous context and have your agent know exactly where to pick up from.
+## What IMI does
 
-Just start with something like:
+IMI stores the parts agents forget:
 
-```
-imi what do we need to do — check logs and previous decisions
-```
+- what you're building
+- why you're building it
+- what decisions were made
+- what got blocked
+- what changed between sessions
 
-Agents like Claude Code instantly know where you left off. Every time an agent ships something, it updates the board in the background. And the best part: you don't have to do much. Just a simple prompt to update this or that.
+That gives you a simple loop:
 
----
+1. You steer in natural language.
+2. IMI stores the intent, decisions, and direction.
+3. Your next agent session picks up from there without a re-brief.
+
+IMI is not another task board. It is the PM layer that sits between you and your coding agents.
 
 ## Install
 
-### Option 1 — CLI binary (standalone)
+### Option 1 — standalone CLI
 
 ```bash
 bunx @imi-ai/imi@latest
 ```
 
-That's it. Downloads the binary, runs `imi init` in your project folder.
+That downloads the binary and runs `imi init` in your project.
 
 Or via curl:
 
@@ -35,127 +41,99 @@ curl -fsSL https://aibyimi.com/install | bash
 ```
 
 Make sure `~/.local/bin` is in your `$PATH`:
+
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 ```
 
-### Option 2 — Plugin (Claude Code + GitHub Copilot CLI)
+### Option 2 — plugin / skill install
 
-Install the IMI plugin directly into your agent CLI. The plugin injects the
-session contract automatically — agents know to call `imi` before responding,
-without manual briefing.
+Install the IMI plugin into your agent CLI so the session gets IMI context automatically.
 
-**Claude Code:**
+**Claude Code**
+
 ```bash
 /plugin marketplace add ProjectAI00/imi-agent
 /plugin install imi
 ```
 
-**GitHub Copilot CLI:**
-```
+**GitHub Copilot CLI**
+
+```bash
 /plugin marketplace add ProjectAI00/imi-agent
 /plugin install imi
 ```
 
-**Or install the skill manually** (works in Claude Code, Copilot CLI, Cursor — anywhere that reads `~/.copilot/skills` or `~/.claude/skills`):
+**Manual skill install**
+
 ```bash
 npx skills add ProjectAI00/imi-agent@imi
 ```
 
-## Usage
+## Start here
+
+These are the commands that matter most when you want to understand the project and steer it:
 
 ```bash
-imi context                           # Human intent first: direction, decisions, current focus
-imi plan                              # Goals/tasks/progress plan
-imi run <task_id>                     # Execute one task with runtime writeback
-imi check                             # Verification snapshot (done work needing review)
-imi help                              # Command reference
-
-# Advanced (agent/runtime)
-imi next --agent <name>               # Atomically claim next task
-imi complete <id> "what you did"      # Mark done + store completion memory
-imi fail <id> "why it failed"         # Release task back to queue with failure context
-imi goal "name" --why "why now"       # Create a goal
-imi task <goal_id> "title" --why "..." # Add a task
-imi log "direction note"              # Log strategic direction
-imi decide "what" "why"               # Log a decision
-imi orchestrate <goal_id> --workers 8 -- <cmd ...>  # Parallel worker loop
+imi context   # what we're building, active work, key decisions
+imi think     # are we still building the right thing?
+imi plan      # full goals and task list
+imi check     # verification state
 ```
 
-## The Loop
-
-```
-1. You define direction     →  imi context
-2. You shape the plan       →  imi plan
-3. Agent claims a task      →  imi next --agent claude
-4. Agent executes           →  (Claude Code / Copilot / Cursor does the work)
-5. Runtime writes back      →  imi wrap <task_id> -- <agent command ...>
-                               (auto checkpoints + complete/fail on exit)
-6. Next agent picks up      →  imi context + imi plan  ← sees prior context automatically
-```
-
-Each cycle compounds. Agents get smarter about your project over time. Works across sessions, machines, and team members.
-
-## Integrations
-
-IMI is the state layer. These tools plug into the execution layer beneath it — IMI doesn't call them, agents choose when to use them.
-
-### Hankweave — task execution & checkpointing
-
-Use Hankweave for long or complex multi-step tasks where you want rollback and checkpointing:
+To capture human thinking directly:
 
 ```bash
-./imi run <task_id>        # generates hank.json from task context
-bunx hankweave hank.json   # execute it
+imi decide "what" "why"   # firm decision with reasoning
+imi log "note"            # direction, observation, or concern
 ```
 
-Hankweave handles HOW work gets done. IMI handles WHAT was decided and WHAT was learned.
+In practice, the human should mostly talk to their agent in natural language. The agent reads IMI, writes back to IMI, and keeps the project aligned without making the human manage command syntax all day.
 
-### Entire — session audit & rewind
+## The product in one sentence
 
-Use Entire for session replay and audit:
+IMI remembers your goals, decisions, blockers, and project direction so your agents can resume work across sessions, teammates, and tools without starting from zero.
 
-```bash
-entire enable --agent claude-code   # hook into your agent sessions
-entire rewind                       # replay what happened in a past session
-entire explain                      # summarise a session in plain English
-```
+## How people use it
 
-Entire records what happened. IMI remembers what matters. Forward state + backward audit.
+Ask your agent things like:
+
+- what are we building?
+- how is it going?
+- are we still aligned?
+- what changed since yesterday?
+
+Under the hood, the agent can use IMI to read context, reason over direction, and persist new decisions or notes back into the repo-local state.
+
+## Optional execution layers
+
+IMI is the state and alignment layer. Execution tools can plug in underneath it.
+
+- **Hankweave** for task execution and checkpointing
+- **Entire** for session audit and rewind
+- **Claude Code, GitHub Copilot CLI, Cursor, Codex** as the session layer on top
+
+The point is not which execution tool you use. The point is that the project context survives.
 
 ## Stack
 
-- **Rust** — single binary, zero runtime dependencies, ~5ms per command
-- **SQLite** — portable, zero-config, project-local (`.imi/state.db`)
-- **Hankweave** — optional execution/checkpointing layer
-- **Entire** — optional session audit/rewind layer
-- **Works with**: Claude Code, GitHub Copilot CLI, Cursor, Codex, any CLI agent
+- **Rust** — single binary
+- **SQLite** — local persistent state in `.imi/state.db`
+- **Works with** Claude Code, GitHub Copilot CLI, Cursor, Codex, and terminal-based agents
 
-## Agent Prompts
+## Agent prompts
 
-Drop these as system prompts to give any agent full IMI literacy:
+The repo includes prompts for the main IMI modes:
 
-| File | Use when |
-|------|----------|
-| `prompts/plan-mode.md` | Agent is decomposing a goal into tasks |
-| `prompts/execute-mode.md` | Agent is executing a task |
-| `prompts/ops-mode.md` | Conversational ops / status / decisions |
-
-## Multi-Agent Support
-
-Multiple agents can work in parallel — each claims a different task atomically:
-
-```bash
-imi next --agent engineer-a --toon   # Agent A claims task 1
-imi next --agent engineer-b --toon   # Agent B claims task 2 (different task)
-imi next --agent engineer-c --toon   # Agent C claims task 3
-```
-
-If a task is abandoned, IMI auto-releases it after 30 minutes. The next agent picks it up with full failure context.
+| File | Purpose |
+|------|---------|
+| `prompts/ops-mode.md` | status, alignment, and decision conversations |
+| `prompts/plan-mode.md` | turning intent into goals and tasks |
+| `prompts/execute-mode.md` | executing tasks and writing back useful summaries |
 
 ## Local usage metrics (PostHog)
 
-To quickly inspect human vs agent vs CI/bot usage from PostHog:
+To inspect human vs agent vs CI/bot usage from PostHog:
 
 ```bash
 cp local.env.example local.env

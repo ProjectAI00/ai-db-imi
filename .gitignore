@@ -7,3 +7,6 @@ npm/node_modules/
 .env.posthog
 scripts/.env.posthog
 local.env
+scripts/posthog-usage.sh
+scripts/.env.posthog.example
+local.env.example

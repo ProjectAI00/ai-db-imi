@@ -131,26 +131,4 @@ The repo includes prompts for the main IMI modes:
 | `prompts/plan-mode.md` | turning intent into goals and tasks |
 | `prompts/execute-mode.md` | executing tasks and writing back useful summaries |
 
-## Local usage metrics (PostHog)
 
-To inspect human vs agent vs CI/bot usage from PostHog:
-
-```bash
-cp local.env.example local.env
-# fill POSTHOG_PROJECT_ID + POSTHOG_API_KEY
-scripts/posthog-usage.sh
-```
-
-Optional window:
-
-```bash
-DAYS=30 scripts/posthog-usage.sh
-```
-
-Router options:
-
-```bash
-scripts/posthog-usage.sh overview   # totals + top events
-scripts/posthog-usage.sh daily      # daily breakdown
-scripts/posthog-usage.sh all        # both (default)
-```

@@ -29,7 +29,7 @@ IMI is not another task board. It is the PM layer that sits between you and your
 ### Option 1 — standalone CLI
 
 ```bash
-bunx @imi-ai/imi@latest
+bunx imi-agent@latest
 ```
 
 That downloads the binary and runs `imi init` in your project.
@@ -37,7 +37,7 @@ That downloads the binary and runs `imi init` in your project.
 Or via curl:
 
 ```bash
-curl -fsSL https://aibyimi.com/install | bash
+curl -fsSL https://useimi.com/install | bash
 ```
 
 Make sure `~/.local/bin` is in your `$PATH`:

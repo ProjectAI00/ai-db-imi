@@ -217,6 +217,6 @@ function runInit(): void {
 
 main().catch((err: Error) => {
   console.error("\nInstall failed:", err.message);
-  console.error(`Manual install: curl -fsSL https://aibyimi.com/install | bash`);
+  console.error(`Manual install: curl -fsSL https://useimi.com/install | bash`);
   process.exit(1);
 });
